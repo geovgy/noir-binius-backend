@@ -1,0 +1,6 @@
+/target/
+**/target/
+*.proof
+
+*.md
+!README.md

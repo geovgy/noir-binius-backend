@@ -1,0 +1,4 @@
+[package]
+name = "bitwise"
+type = "bin"
+authors = [""]

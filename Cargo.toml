@@ -1,0 +1,28 @@
+[package]
+name = "noir-binius"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "MIT OR Apache-2.0"
+description = "A zero-knowledge Binius64 proving backend for Noir ACIR circuits"
+
+[dependencies]
+acir = { git = "https://github.com/noir-lang/noir", rev = "99bb8b5cf33d7669adbdef096b12d80f30b4c0c9", features = ["bn254"] }
+anyhow = "1.0.102"
+binius-circuits = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
+binius-core = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
+binius-frontend = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
+binius-hash = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
+binius-prover = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
+binius-transcript = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
+binius-verifier = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
+blake3 = "1.8.2"
+clap = { version = "4.6.0", features = ["derive"] }
+num-bigint = "0.5.1"
+rand = "0.10.1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+
+[profile.release]
+lto = "thin"
+debug = true

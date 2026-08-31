@@ -1,0 +1,4 @@
+[package]
+name = "arithmetic"
+type = "bin"
+authors = [""]
