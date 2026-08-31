@@ -8,8 +8,10 @@ proof_path="$arithmetic_dir/target/arithmetic.binius"
 tampered_path="$arithmetic_dir/target/arithmetic-tampered.binius"
 bitwise_proof_path="$bitwise_dir/target/bitwise.binius"
 
-(cd "$arithmetic_dir" && nargo execute)
-(cd "$bitwise_dir" && nargo execute)
+if [[ "${SKIP_NARGO:-0}" != "1" ]]; then
+  (cd "$arithmetic_dir" && nargo execute)
+  (cd "$bitwise_dir" && nargo execute)
+fi
 
 cargo run --release --manifest-path "$repo_dir/Cargo.toml" -- \
   info -b "$arithmetic_dir/target/arithmetic.json"

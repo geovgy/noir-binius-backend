@@ -4,3 +4,7 @@
 
 *.md
 !README.md
+!SUPPORT.md
+
+# Generated from a verified inner proof by `recursive-inputs --toml`.
+examples/recursive_aggregation/Prover.toml

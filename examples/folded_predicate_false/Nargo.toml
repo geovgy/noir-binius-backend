@@ -1,0 +1,6 @@
+[package]
+name = "folded_predicate_false"
+type = "bin"
+authors = [""]
+
+[dependencies]

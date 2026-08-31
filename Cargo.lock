@@ -1185,6 +1185,7 @@ dependencies = [
  "binius-hash",
  "binius-prover",
  "binius-transcript",
+ "binius-utils",
  "binius-verifier",
  "blake3",
  "clap",

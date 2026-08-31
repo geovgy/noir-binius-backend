@@ -1,0 +1,4 @@
+[package]
+name = "folded_predicate"
+type = "bin"
+authors = [""]

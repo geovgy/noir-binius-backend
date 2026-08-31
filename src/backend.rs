@@ -10,7 +10,8 @@ use binius_verifier::{config::StdChallenger, zk_config::ZKVerifier};
 use crate::{
     artifact::LoadedArtifact,
     proof::ProofBundle,
-    translate::{compile, words_from_u64},
+    recursive::{self, RecursiveInputs, VerificationKey},
+    translate::{compile_program, words_from_u64},
 };
 
 pub struct CircuitInfo {
@@ -21,7 +22,7 @@ pub struct CircuitInfo {
 
 pub fn info(artifact_path: &Path) -> Result<CircuitInfo> {
     let artifact = LoadedArtifact::read(artifact_path)?;
-    let compiled = compile(&artifact.program.functions[0])?;
+    let compiled = compile_program(&artifact.program)?;
     Ok(CircuitInfo {
         noir_version: artifact.noir_version,
         opcodes: compiled.opcode_count,
@@ -37,25 +38,16 @@ pub fn prove(
 ) -> Result<ProofBundle> {
     ensure!(log_inv_rate > 0, "log inverse rate must be at least one");
     let artifact = LoadedArtifact::read(artifact_path)?;
-    let compiled = compile(&artifact.program.functions[0])?;
+    let compiled = compile_program(&artifact.program)?;
     let witness_bytes = fs::read(witness_path)
         .with_context(|| format!("failed to read Nargo witness {}", witness_path.display()))?;
     let mut witness_stack = WitnessStack::<FieldElement>::deserialize(&witness_bytes)
         .with_context(|| format!("failed to decode Nargo witness {}", witness_path.display()))?;
-    ensure!(
-        witness_stack.length() == 1,
-        "only a one-frame Nargo witness stack is currently supported; found {} frames",
-        witness_stack.length()
-    );
-    let stack_item = witness_stack.pop().expect("length was checked");
-    ensure!(
-        stack_item.index == 0,
-        "witness stack is for ACIR function {}, expected function 0",
-        stack_item.index
-    );
-
-    let public_words = compiled.public_words(&stack_item.witness)?;
-    let values = compiled.populate(&stack_item.witness)?;
+    let values = compiled.populate_stack(&mut witness_stack)?;
+    let public_words: Vec<_> = values.inout().iter().map(|word| word.as_u64()).collect();
+    compiled
+        .verify_recursive_calls(&public_words)
+        .context("recursive proof preflight verification failed")?;
     let verifier = ZKVerifier::<StdHashSuite>::setup(
         compiled.circuit.constraint_system().clone(),
         log_inv_rate as usize,
@@ -84,7 +76,7 @@ pub fn verify(artifact_path: &Path, proof_path: &Path) -> Result<ProofBundle> {
         bundle.circuit_digest == artifact.digest,
         "proof was created for a different Noir artifact"
     );
-    let compiled = compile(&artifact.program.functions[0])?;
+    let compiled = compile_program(&artifact.program)?;
     ensure!(
         bundle.public_words.len() == compiled.expected_public_word_count(),
         "proof contains {} public words, translated circuit expects {}",
@@ -105,5 +97,21 @@ pub fn verify(artifact_path: &Path, proof_path: &Path) -> Result<ProofBundle> {
     transcript
         .finalize()
         .context("Binius verifier did not consume the complete proof transcript")?;
+    compiled
+        .verify_recursive_calls(&bundle.public_words)
+        .context("delegated recursive proof verification failed")?;
     Ok(bundle)
+}
+
+pub fn recursive_inputs(artifact_path: &Path, proof_path: &Path) -> Result<RecursiveInputs> {
+    let artifact = LoadedArtifact::read(artifact_path)?;
+    let bundle = verify(artifact_path, proof_path)?;
+    let compiled = compile_program(&artifact.program)?;
+    let verifier = ZKVerifier::<StdHashSuite>::setup(
+        compiled.circuit.constraint_system().clone(),
+        bundle.log_inv_rate as usize,
+    )
+    .context("failed to construct the recursive Binius verification key")?;
+    let key = VerificationKey::new(artifact.digest, compiled.recursive.clone(), verifier);
+    recursive::recursive_inputs(&key, &bundle)
 }

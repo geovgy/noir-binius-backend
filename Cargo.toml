@@ -15,6 +15,7 @@ binius-frontend = { git = "https://github.com/IrreducibleOSS/binius64", rev = "0
 binius-hash = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
 binius-prover = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
 binius-transcript = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
+binius-utils = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
 binius-verifier = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
 blake3 = "1.8.2"
 clap = { version = "4.6.0", features = ["derive"] }

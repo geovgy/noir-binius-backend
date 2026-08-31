@@ -1,7 +1,7 @@
 use std::{fs, path::Path};
 
 use acir::{FieldElement, circuit::Program};
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer};
 
 #[derive(Deserialize)]
@@ -31,11 +31,6 @@ impl LoadedArtifact {
             .with_context(|| format!("failed to read Noir artifact {}", path.display()))?;
         let parsed: NoirArtifact = serde_json::from_slice(&bytes)
             .with_context(|| format!("failed to decode Noir artifact {}", path.display()))?;
-        ensure!(
-            parsed.bytecode.functions.len() == 1,
-            "only single-function ACIR programs are currently supported; artifact contains {} functions",
-            parsed.bytecode.functions.len()
-        );
         Ok(Self {
             noir_version: parsed.noir_version,
             program: parsed.bytecode,

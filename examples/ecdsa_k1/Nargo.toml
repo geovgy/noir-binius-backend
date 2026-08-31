@@ -1,0 +1,4 @@
+[package]
+name = "ecdsa_k1"
+type = "bin"
+authors = [""]

@@ -10,19 +10,20 @@ big-integer gadgets.
 
 ## Status
 
-The current end-to-end MVP supports:
+All six ACIR opcode variants and all fourteen black-box variants in the pinned Noir beta.18 ACIR
+schema are handled. This includes dynamic memory, multi-function and conditional calls, AES-128,
+BLAKE2s, BLAKE3, Keccak-f1600, SHA-256 compression, Poseidon2, both supported ECDSA curves,
+Grumpkin addition/MSM, and recursive aggregation. See [SUPPORT.md](SUPPORT.md) for the exhaustive
+matrix and semantic notes.
 
-| ACIR feature | Status |
-| --- | --- |
-| `AssertZero` quadratic field expressions | Supported |
-| `RANGE` | Supported up to the 254-bit ACIR field width |
-| `AND`, `XOR` | Supported up to the 254-bit ACIR field width |
-| Brillig witness-generation calls | Accepted; Nargo executes them before proving |
-| Memory opcodes and multi-function calls | Rejected |
-| Other black-box functions | Rejected with the opcode index and function name |
+Recursive aggregation uses ACIR's permitted final-verifier delegation: recursive key, proof, and
+public-input fields are bound into the outer Binius public statement, and the final verifier checks
+the nested Binius ZK proof. This is sound but currently non-succinct and reveals the recursive
+payload. The pinned Binius recursion crate only records its transparent verifier, not the
+Iron-Spartan `ZKVerifier` used here.
 
-Unsupported constrained opcodes are never silently skipped. This is prototype software and has
-not been audited; do not use it for production or security-critical proofs.
+This is experimental software and has not been audited; do not use it for production or
+security-critical proofs.
 
 ## Prerequisites
 
@@ -73,6 +74,19 @@ The proof bundle contains the raw Binius transcript, the public input words, the
 and a digest binding it to the exact Noir artifact. As with other proof formats that carry their
 public inputs, an application must compare those inputs with the statement it intended to verify.
 
+To use a verified proof as a recursive Noir input, export the backend-specific fields as JSON or a
+generated `Prover.toml`:
+
+```console
+cargo run --release -- recursive-inputs \
+  -b examples/arithmetic/target/arithmetic.json \
+  -p examples/arithmetic/target/arithmetic.binius \
+  -o examples/recursive_aggregation/Prover.toml \
+  --toml
+```
+
+The exporter supplies the required proof-type tag and refuses an invalid inner proof.
+
 ## Tests
 
 Fast Rust tests and compile checks:
@@ -81,15 +95,17 @@ Fast Rust tests and compile checks:
 cargo test
 ```
 
-The full check compiles, proves, and verifies the arithmetic and bitwise Noir fixtures, then
-confirms that a same-length, byte-tampered proof is rejected cryptographically:
+The smoke check compiles, proves, and verifies the small fixtures and confirms that a same-length,
+byte-tampered proof is rejected cryptographically:
 
 ```console
 RUSTFLAGS="-C target-cpu=native" scripts/e2e.sh
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the lowering design and extension points.
+The exhaustive script exercises every pinned opcode and black-box fixture, including an active
+recursive proof:
 
-## License
+```console
+RUSTFLAGS="-C target-cpu=native" scripts/e2e-full.sh
+```
 
-Licensed under either Apache-2.0 or MIT, at your option.
