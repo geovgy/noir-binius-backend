@@ -1,10 +1,13 @@
 /target/
 **/target/
+**/node_modules/
+packages/**/dist/
 *.proof
 
 *.md
 !README.md
 !SUPPORT.md
+!packages/**/README.md
 
 # Generated from a verified inner proof by `recursive-inputs --toml`.
 examples/recursive_aggregation/Prover.toml

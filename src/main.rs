@@ -3,6 +3,13 @@ use std::{fs, path::PathBuf};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use noir_binius::backend;
+use serde::Serialize;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsonProofData<'a> {
+    public_inputs: &'a [String],
+}
 
 #[derive(Parser)]
 #[command(
@@ -37,6 +44,9 @@ enum Command {
         /// log2 of the inverse Reed-Solomon rate.
         #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
         log_inv_rate: u32,
+        /// Print the Noir public inputs as machine-readable JSON.
+        #[arg(long)]
+        json: bool,
     },
     /// Verify a zero-knowledge Binius proof against its compiled Noir circuit.
     Verify {
@@ -46,6 +56,21 @@ enum Command {
         /// Proof bundle created by `noir-binius prove`.
         #[arg(short = 'p', long)]
         proof: PathBuf,
+        /// Print the verified Noir public inputs as machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write the portable Binius verification key for a Noir circuit.
+    WriteVk {
+        /// Nargo's target/<package>.json program artifact.
+        #[arg(short = 'b', long = "bytecode")]
+        artifact: PathBuf,
+        /// Output verification-key file.
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+        /// log2 of the inverse Reed-Solomon rate.
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
+        log_inv_rate: u32,
     },
     /// Encode a proof and verification key for Noir's recursive-aggregation API.
     RecursiveInputs {
@@ -78,17 +103,65 @@ fn main() -> Result<()> {
             witness,
             output,
             log_inv_rate,
+            json,
         } => {
-            let proof = backend::prove(&artifact, &witness, &output, log_inv_rate)?;
-            println!(
-                "Proof written to {} ({} bytes)",
-                output.display(),
-                proof.transcript.len()
-            );
+            let result =
+                backend::prove_with_public_inputs(&artifact, &witness, &output, log_inv_rate)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&JsonProofData {
+                        public_inputs: &result.public_inputs,
+                    })?
+                );
+            } else {
+                println!(
+                    "Proof written to {} ({} bytes)",
+                    output.display(),
+                    result.proof.transcript.len()
+                );
+            }
         }
-        Command::Verify { artifact, proof } => {
-            backend::verify(&artifact, &proof)?;
-            println!("Proof verified successfully");
+        Command::Verify {
+            artifact,
+            proof,
+            json,
+        } => {
+            let result = backend::verify_with_public_inputs(&artifact, &proof)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&JsonProofData {
+                        public_inputs: &result.public_inputs,
+                    })?
+                );
+            } else {
+                println!("Proof verified successfully");
+            }
+        }
+        Command::WriteVk {
+            artifact,
+            output,
+            log_inv_rate,
+        } => {
+            let key = backend::verification_key(&artifact, log_inv_rate)?;
+            if let Some(parent) = output.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!(
+                        "failed to create verification-key directory {}",
+                        parent.display()
+                    )
+                })?;
+            }
+            fs::write(&output, &key)
+                .with_context(|| format!("failed to write {}", output.display()))?;
+            println!(
+                "Verification key written to {} ({} bytes)",
+                output.display(),
+                key.len()
+            );
         }
         Command::RecursiveInputs {
             artifact,

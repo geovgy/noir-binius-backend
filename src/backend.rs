@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-use acir::{FieldElement, native_types::WitnessStack};
+use acir::{AcirField, FieldElement, native_types::WitnessStack};
 use anyhow::{Context, Result, ensure};
 use binius_hash::StdHashSuite;
 use binius_prover::{OptimalPackedB128, zk_config::ZKProver};
@@ -20,6 +20,12 @@ pub struct CircuitInfo {
     pub public_field_elements: usize,
 }
 
+/// A proof bundle together with the Noir-level public inputs it proves.
+pub struct ProofResult {
+    pub proof: ProofBundle,
+    pub public_inputs: Vec<String>,
+}
+
 pub fn info(artifact_path: &Path) -> Result<CircuitInfo> {
     let artifact = LoadedArtifact::read(artifact_path)?;
     let compiled = compile_program(&artifact.program)?;
@@ -36,6 +42,15 @@ pub fn prove(
     proof_path: &Path,
     log_inv_rate: u32,
 ) -> Result<ProofBundle> {
+    Ok(prove_with_public_inputs(artifact_path, witness_path, proof_path, log_inv_rate)?.proof)
+}
+
+pub fn prove_with_public_inputs(
+    artifact_path: &Path,
+    witness_path: &Path,
+    proof_path: &Path,
+    log_inv_rate: u32,
+) -> Result<ProofResult> {
     ensure!(log_inv_rate > 0, "log inverse rate must be at least one");
     let artifact = LoadedArtifact::read(artifact_path)?;
     let compiled = compile_program(&artifact.program)?;
@@ -66,10 +81,18 @@ pub fn prove(
         transcript: transcript.finalize(),
     };
     bundle.write(proof_path)?;
-    Ok(bundle)
+    let public_inputs = noir_public_inputs(&compiled, &bundle.public_words)?;
+    Ok(ProofResult {
+        proof: bundle,
+        public_inputs,
+    })
 }
 
 pub fn verify(artifact_path: &Path, proof_path: &Path) -> Result<ProofBundle> {
+    Ok(verify_with_public_inputs(artifact_path, proof_path)?.proof)
+}
+
+pub fn verify_with_public_inputs(artifact_path: &Path, proof_path: &Path) -> Result<ProofResult> {
     let artifact = LoadedArtifact::read(artifact_path)?;
     let bundle = ProofBundle::read(proof_path)?;
     ensure!(
@@ -100,7 +123,23 @@ pub fn verify(artifact_path: &Path, proof_path: &Path) -> Result<ProofBundle> {
     compiled
         .verify_recursive_calls(&bundle.public_words)
         .context("delegated recursive proof verification failed")?;
-    Ok(bundle)
+    let public_inputs = noir_public_inputs(&compiled, &bundle.public_words)?;
+    Ok(ProofResult {
+        proof: bundle,
+        public_inputs,
+    })
+}
+
+pub fn verification_key(artifact_path: &Path, log_inv_rate: u32) -> Result<Vec<u8>> {
+    ensure!(log_inv_rate > 0, "log inverse rate must be at least one");
+    let artifact = LoadedArtifact::read(artifact_path)?;
+    let compiled = compile_program(&artifact.program)?;
+    let verifier = ZKVerifier::<StdHashSuite>::setup(
+        compiled.circuit.constraint_system().clone(),
+        log_inv_rate as usize,
+    )
+    .context("failed to construct the Binius verification key")?;
+    VerificationKey::new(artifact.digest, compiled.recursive.clone(), verifier).encode()
 }
 
 pub fn recursive_inputs(artifact_path: &Path, proof_path: &Path) -> Result<RecursiveInputs> {
@@ -114,4 +153,16 @@ pub fn recursive_inputs(artifact_path: &Path, proof_path: &Path) -> Result<Recur
     .context("failed to construct the recursive Binius verification key")?;
     let key = VerificationKey::new(artifact.digest, compiled.recursive.clone(), verifier);
     recursive::recursive_inputs(&key, &bundle)
+}
+
+fn noir_public_inputs(
+    compiled: &crate::translate::CompiledCircuit,
+    public_words: &[u64],
+) -> Result<Vec<String>> {
+    Ok(compiled
+        .recursive
+        .noir_public_values(public_words)?
+        .into_iter()
+        .map(|field| format!("0x{}", field.to_hex()))
+        .collect())
 }

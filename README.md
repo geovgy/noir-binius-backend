@@ -71,8 +71,39 @@ cargo run --release -- verify \
 ```
 
 The proof bundle contains the raw Binius transcript, the public input words, the proof parameters,
-and a digest binding it to the exact Noir artifact. As with other proof formats that carry their
-public inputs, an application must compare those inputs with the statement it intended to verify.
+and a digest binding it to the exact serialized ACIR bytecode. As with other proof formats that
+carry their public inputs, an application must compare those inputs with the statement it intended
+to verify.
+
+## TypeScript
+
+The [`@noir-binius/backend`](packages/noir-binius-backend) package exposes a `BiniusBackend` with
+the same proof-data shape as `@aztec/bb.js`'s `UltraHonkBackend`. Build the native backend and the
+package first:
+
+```console
+cargo build --release
+cd packages/noir-binius-backend
+bun install
+bun run build
+```
+
+The compressed witness returned by `@noir-lang/noir_js` can be passed directly to the backend:
+
+```typescript
+import { Noir } from "@noir-lang/noir_js";
+import { BiniusBackend } from "@noir-binius/backend";
+import circuit from "../target/my_circuit.json" with { type: "json" };
+
+const noir = new Noir(circuit);
+const backend = new BiniusBackend(circuit.bytecode);
+const { witness } = await noir.execute({ x: 3, expected: 14 });
+const proofData = await backend.generateProof(witness);
+console.log(await backend.verifyProof(proofData));
+```
+
+The package invokes the native `noir-binius` executable and is currently Node.js-only. See its
+[README](packages/noir-binius-backend/README.md) for binary discovery and API details.
 
 To use a verified proof as a recursive Noir input, export the backend-specific fields as JSON or a
 generated `Prover.toml`:
@@ -108,4 +139,3 @@ recursive proof:
 ```console
 RUSTFLAGS="-C target-cpu=native" scripts/e2e-full.sh
 ```
-

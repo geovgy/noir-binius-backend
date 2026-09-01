@@ -11,6 +11,11 @@ struct NoirArtifact {
     bytecode: Program<FieldElement>,
 }
 
+#[derive(Deserialize)]
+struct EncodedArtifact {
+    bytecode: String,
+}
+
 fn deserialize_program<'de, D>(deserializer: D) -> Result<Program<FieldElement>, D::Error>
 where
     D: Deserializer<'de>,
@@ -31,10 +36,12 @@ impl LoadedArtifact {
             .with_context(|| format!("failed to read Noir artifact {}", path.display()))?;
         let parsed: NoirArtifact = serde_json::from_slice(&bytes)
             .with_context(|| format!("failed to decode Noir artifact {}", path.display()))?;
+        let encoded: EncodedArtifact = serde_json::from_slice(&bytes)
+            .with_context(|| format!("failed to read Noir bytecode from {}", path.display()))?;
         Ok(Self {
             noir_version: parsed.noir_version,
             program: parsed.bytecode,
-            digest: *blake3::hash(&bytes).as_bytes(),
+            digest: *blake3::hash(encoded.bytecode.as_bytes()).as_bytes(),
         })
     }
 }
