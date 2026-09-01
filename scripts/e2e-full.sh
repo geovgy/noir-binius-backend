@@ -4,6 +4,13 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 backend="$repo_dir/target/release/noir-binius"
 
+run_timed() {
+  local label="$1"
+  shift
+  local TIMEFORMAT="$label took %3R seconds"
+  time "$@"
+}
+
 cargo build --release --manifest-path "$repo_dir/Cargo.toml"
 
 fixtures=(
@@ -32,8 +39,10 @@ for fixture in "${fixtures[@]}"; do
     (cd "$fixture_dir" && nargo execute)
   fi
   "$backend" info -b "$artifact"
-  "$backend" prove -b "$artifact" -w "$witness" -o "$proof"
-  "$backend" verify -b "$artifact" -p "$proof"
+  run_timed "$fixture prove" \
+    "$backend" prove -b "$artifact" -w "$witness" -o "$proof"
+  run_timed "$fixture verify" \
+    "$backend" verify -b "$artifact" -p "$proof"
 done
 
 inner_dir="$repo_dir/examples/arithmetic"
@@ -46,11 +55,13 @@ if [[ "${SKIP_NARGO:-0}" != "1" ]]; then
   (cd "$recursive_dir" && nargo execute)
 fi
 "$backend" info -b "$recursive_dir/target/recursive_aggregation.json"
-"$backend" prove \
+run_timed "recursive_aggregation prove" \
+  "$backend" prove \
   -b "$recursive_dir/target/recursive_aggregation.json" \
   -w "$recursive_dir/target/recursive_aggregation.gz" \
   -o "$recursive_dir/target/recursive_aggregation.binius"
-"$backend" verify \
+run_timed "recursive_aggregation verify" \
+  "$backend" verify \
   -b "$recursive_dir/target/recursive_aggregation.json" \
   -p "$recursive_dir/target/recursive_aggregation.binius"
 
