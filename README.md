@@ -139,3 +139,6 @@ recursive proof:
 ```console
 RUSTFLAGS="-C target-cpu=native" scripts/e2e-full.sh
 ```
+
+## License
+MIT
