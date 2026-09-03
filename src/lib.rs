@@ -6,4 +6,5 @@ mod grumpkin;
 mod poseidon2;
 pub mod proof;
 pub mod recursive;
+pub mod solidity;
 pub mod translate;

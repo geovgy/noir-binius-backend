@@ -17,14 +17,16 @@ const artifactPath = resolve(
   'target',
   'arithmetic.json',
 );
-const binaryPath = resolve(repositoryRoot, 'target', 'release', 'noir-binius');
+const binaryPath =
+  process.env.NOIR_BINIUS_BINARY ??
+  resolve(repositoryRoot, 'target', 'release', 'noir-binius');
 const execFileAsync = promisify(execFile);
 
 describe('BiniusBackend', () => {
   test('proves and verifies a noir_js witness with bb.js-shaped proof data', async () => {
     const circuit = JSON.parse(await readFile(artifactPath, 'utf8')) as CompiledCircuit;
     const noir = new Noir(circuit);
-    const backend = new BiniusBackend(circuit.bytecode);
+    const backend = new BiniusBackend(circuit.bytecode, { binaryPath });
     const { witness } = await noir.execute({ x: 3, expected: 14 });
 
     const proofData = await backend.generateProof(witness);
@@ -37,6 +39,14 @@ describe('BiniusBackend', () => {
 
     const verificationKey = await backend.getVerificationKey();
     expect(verificationKey.length).toBeGreaterThan(0);
+    const directVerifier = await backend.getSolidityVerifier(verificationKey);
+    expect(directVerifier).toContain('interface IBinius64Verifier');
+    expect(directVerifier).toContain('NBINZK01');
+    const wrappedVerifier = await backend.getSolidityVerifier(verificationKey, {
+      verifierTarget: 'evm-sp1',
+    });
+    expect(wrappedVerifier).toContain('interface ISP1Verifier');
+    expect(wrappedVerifier).toContain('NBINSP11');
     const recursiveArtifacts = await backend.generateRecursiveProofArtifacts(
       proofData.proof,
       proofData.publicInputs.length,

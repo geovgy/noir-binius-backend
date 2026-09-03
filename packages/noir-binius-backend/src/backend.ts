@@ -31,6 +31,17 @@ export type BiniusProofOptions = {
   logInvRate?: number;
 };
 
+/** Solidity proof/verifier format selected by the native backend. */
+export type SolidityVerifierTarget = 'evm' | 'evm-sp1';
+
+export type SolidityVerifierOptions = BiniusProofOptions & {
+  /**
+   * `evm` verifies the raw Binius64 proof through a configured verifier engine.
+   * `evm-sp1` verifies a succinct SP1 wrapper proof and is the lower-gas option.
+   */
+  verifierTarget?: SolidityVerifierTarget;
+};
+
 export type BiniusBackendOptions = BiniusProofOptions & {
   /** Path to the native noir-binius executable. */
   binaryPath?: string;
@@ -179,10 +190,10 @@ export class BiniusBackend {
     return this.withWorkspace(async ({ directory, artifactPath }) => {
       const keyPath = join(directory, 'verification-key.binius');
       await runBinary(this.binaryPath, [
-        'write-vk',
-        '--bytecode',
+        'write_vk',
+        '--bytecode_path',
         artifactPath,
-        '--output',
+        '--output_path',
         keyPath,
         '--log-inv-rate',
         String(logInvRate),
@@ -237,12 +248,48 @@ export class BiniusBackend {
   }
 
   async getSolidityVerifier(
-    _verificationKey: Uint8Array,
-    _options: BiniusProofOptions = {},
+    verificationKey: Uint8Array,
+    options: SolidityVerifierOptions = {},
   ): Promise<string> {
-    throw new BiniusBackendError(
-      'Binius Solidity verification is not supported by noir-binius',
+    if (!(verificationKey instanceof Uint8Array) || verificationKey.length === 0) {
+      throw new BiniusBackendError(
+        'verificationKey must be a non-empty Uint8Array',
+      );
+    }
+    return this.withWorkspace(async ({ directory }) => {
+      const verifierTarget = validateSolidityVerifierTarget(
+        options.verifierTarget ?? 'evm',
+      );
+      const keyPath = join(directory, 'verification-key.binius');
+      const verifierPath = join(directory, 'BiniusVerifier.sol');
+      await writeFile(keyPath, verificationKey);
+      await runBinary(this.binaryPath, [
+        'write_solidity_verifier',
+        '--vk_path',
+        keyPath,
+        '--output_path',
+        verifierPath,
+        '--verifier_target',
+        verifierTarget,
+      ]);
+      return readFile(verifierPath, 'utf8');
+    });
+  }
+
+  /** Computes the circuit verification key and returns its Solidity verifier. */
+  async generateSolidityVerifier(
+    options: SolidityVerifierOptions = {},
+  ): Promise<string> {
+    // Validate before compiling a verification key, since key generation can be
+    // substantially more expensive than rendering the Solidity adapter.
+    const verifierTarget = validateSolidityVerifierTarget(
+      options.verifierTarget ?? 'evm',
     );
+    const verificationKey = await this.getVerificationKey(options);
+    return this.getSolidityVerifier(verificationKey, {
+      ...options,
+      verifierTarget,
+    });
   }
 
   /** No long-lived native process is retained, so destruction is a no-op. */
@@ -260,6 +307,17 @@ export class BiniusBackend {
       await rm(directory, { force: true, recursive: true });
     }
   }
+}
+
+function validateSolidityVerifierTarget(
+  value: SolidityVerifierTarget,
+): SolidityVerifierTarget {
+  if (value !== 'evm' && value !== 'evm-sp1') {
+    throw new BiniusBackendError(
+      `verifierTarget must be either "evm" or "evm-sp1", received ${JSON.stringify(value)}`,
+    );
+  }
+  return value;
 }
 
 function findDefaultBinary(): string {

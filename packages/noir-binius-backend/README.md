@@ -37,10 +37,32 @@ The package finds this repository's `target/release/noir-binius` automatically. 
 or relocated package, put `noir-binius` on `PATH`, set `NOIR_BINIUS_BINARY`, or pass
 `{ binaryPath: '/absolute/path/to/noir-binius' }` to the constructor.
 
-`getVerificationKey` and Binius recursive proof artifacts are supported. Solidity verifier
-generation is not available because this backend does not currently have a Solidity verifier. The
-backend-specific value for Noir's recursive aggregation API is exported as
-`BINIUS_ZK_PROOF_TYPE`.
+`getVerificationKey`, Solidity verifier generation, and Binius recursive proof artifacts are
+supported. The direct Binius64 target is the default; select the succinct SP1 wrapper explicitly:
+
+```ts
+const directSource = await backend.generateSolidityVerifier();
+const wrappedSource = await backend.generateSolidityVerifier({
+  verifierTarget: 'evm-sp1',
+});
+
+const key = await backend.getVerificationKey();
+const sameWrappedSource = await backend.getSolidityVerifier(key, {
+  verifierTarget: 'evm-sp1',
+});
+```
+
+`verifierTarget: 'evm'` accepts the original `NBINZK01` proof and delegates complete transcript
+verification to the `IBinius64Verifier` engine or precompile address supplied when the generated
+contract is deployed. The engine must have the generated contract's
+`BINIUS_VERIFICATION_KEY_HASH` registered; the package does not ship that universal engine.
+`verifierTarget: 'evm-sp1'` accepts the `NBINSP11` wrapper created by the repository's
+`sp1/prover` binary and delegates succinct verification to an SP1 verifier gateway. Both generated
+contracts expose `verify(bytes, bytes32[])` and bind the ordered `ProofData.publicInputs`.
+
+The backend-specific value for Noir's recursive aggregation API is exported as
+`BINIUS_ZK_PROOF_TYPE`. Direct Solidity generation rejects circuits with delegated recursive proof
+calls; the SP1 target supports them.
 
 The backend and package are experimental and unaudited. Do not use them for production or
 security-critical proofs.

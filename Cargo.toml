@@ -6,6 +6,11 @@ rust-version = "1.97.1"
 license = "MIT OR Apache-2.0"
 description = "A zero-knowledge Binius64 proving backend for Noir ACIR circuits"
 
+[workspace]
+members = [".", "crates/noir-binius-verifier"]
+exclude = ["sp1/guest", "sp1/prover"]
+resolver = "3"
+
 [dependencies]
 acir = { git = "https://github.com/noir-lang/noir", rev = "99bb8b5cf33d7669adbdef096b12d80f30b4c0c9", features = ["bn254"] }
 anyhow = "1.0.102"
@@ -20,9 +25,11 @@ binius-verifier = { git = "https://github.com/IrreducibleOSS/binius64", rev = "0
 blake3 = "1.8.2"
 clap = { version = "4.6.0", features = ["derive"] }
 num-bigint = "0.5.1"
+noir-binius-verifier = { path = "crates/noir-binius-verifier" }
 rand = "0.10.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+sha2 = "0.10.9"
 
 [profile.release]
 lto = "thin"

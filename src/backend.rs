@@ -1,11 +1,12 @@
 use std::{fs, path::Path};
 
-use acir::{AcirField, FieldElement, native_types::WitnessStack};
+use acir::{FieldElement, native_types::WitnessStack};
 use anyhow::{Context, Result, ensure};
 use binius_hash::StdHashSuite;
 use binius_prover::{OptimalPackedB128, zk_config::ZKProver};
 use binius_transcript::{ProverTranscript, VerifierTranscript};
 use binius_verifier::{config::StdChallenger, zk_config::ZKVerifier};
+use noir_binius_verifier::field_to_hex;
 
 use crate::{
     artifact::LoadedArtifact,
@@ -163,6 +164,6 @@ fn noir_public_inputs(
         .recursive
         .noir_public_values(public_words)?
         .into_iter()
-        .map(|field| format!("0x{}", field.to_hex()))
+        .map(field_to_hex)
         .collect())
 }

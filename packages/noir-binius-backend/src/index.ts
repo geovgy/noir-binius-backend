@@ -6,4 +6,6 @@ export {
   type BiniusProofOptions,
   type ProofData,
   type RecursiveProofArtifacts,
+  type SolidityVerifierOptions,
+  type SolidityVerifierTarget,
 } from './backend.js';

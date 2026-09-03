@@ -1,0 +1,21 @@
+[package]
+name = "noir-binius-sp1"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace]
+resolver = "3"
+
+[features]
+# SP1's profiling feature selects its portable executor on x86_64. This is slower, but is useful
+# on hosts where the JIT/native executor cannot safely run a large verifier guest.
+portable-executor = ["sp1-sdk/profiling"]
+
+[dependencies]
+anyhow = "1.0.102"
+clap = { version = "4.6.0", features = ["derive"] }
+noir-binius-verifier = { path = "../../crates/noir-binius-verifier" }
+sha2 = "0.10.9"
+sp1-sdk = { version = "=6.6.0", features = ["blocking", "network"] }

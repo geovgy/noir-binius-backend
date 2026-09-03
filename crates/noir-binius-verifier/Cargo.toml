@@ -1,0 +1,16 @@
+[package]
+name = "noir-binius-verifier"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT OR Apache-2.0"
+description = "Portable proof formats and verifier for noir-binius"
+
+[dependencies]
+anyhow = "1.0.102"
+binius-core = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
+binius-hash = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
+binius-transcript = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
+binius-utils = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
+binius-verifier = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
+blake3 = "1.8.2"

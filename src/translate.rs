@@ -302,7 +302,7 @@ fn resolve_pending_field(
     public_positions: &HashMap<Wire, u32>,
 ) -> Result<FieldRef> {
     match field {
-        PendingFieldRef::Constant(value) => Ok(FieldRef::constant(value)),
+        PendingFieldRef::Constant(value) => Ok(FieldRef::constant(field_to_limbs(value))),
         PendingFieldRef::Public(value) => resolve_public_biguint(&value, public_positions),
     }
 }

@@ -75,6 +75,67 @@ and a digest binding it to the exact serialized ACIR bytecode. As with other pro
 carry their public inputs, an application must compare those inputs with the statement it intended
 to verify.
 
+## Solidity verifiers
+
+Write the portable verification key, then select one of the two Solidity targets supported by the
+Noir-compatible `write_solidity_verifier` command:
+
+```console
+cargo run --release -- write_vk \
+  -b examples/arithmetic/target/arithmetic.json \
+  -o examples/arithmetic/target/arithmetic.vk
+
+# Verify the original NBINZK01 Binius64 proof through a Binius64 verifier engine.
+cargo run --release -- write_solidity_verifier \
+  -k examples/arithmetic/target/arithmetic.vk \
+  -o examples/arithmetic/target/BiniusVerifier.sol \
+  --verifier_target evm
+
+# Verify a succinct SP1 proof wrapping that Binius64 proof.
+cargo run --release -- write_solidity_verifier \
+  -k examples/arithmetic/target/arithmetic.vk \
+  -o examples/arithmetic/target/BiniusSP1Verifier.sol \
+  --verifier_target evm-sp1
+```
+
+The command also accepts the usual `--vk_path`, `--output_path`, `-t`, and `--optimized` spellings.
+The two targets deliberately have the same `verify(bytes,bytes32[])` application ABI, but accept
+different proof formats:
+
+| target | accepted proof | verifier passed to the constructor | trade-off |
+| --- | --- | --- | --- |
+| `evm` (default) | the raw `NBINZK01` output of `noir-binius prove` | a Binius64 engine/precompile implementing `IBinius64Verifier` with this key registered by its SHA-256 hash | no wrapper assumption; very high verification cost |
+| `evm-sp1` | an `NBINSP11` envelope made by `noir-binius-sp1` | an SP1 verifier or `SP1VerifierGateway` with a route for the proof's verifier selector | succinct on-chain verification; requires an SP1 wrapper proof |
+
+The direct adapter validates the proof envelope, circuit digest, proof parameters, and ordered Noir
+public inputs before asking the configured engine to verify the complete Binius64 transcript. It
+rejects verification keys containing delegated recursive calls because a plain Binius engine does
+not verify that backend-specific metadata. Use `evm-sp1` for those circuits. The direct target is
+intended for an EVM chain or integration that provides a Binius64 verifier engine/precompile; this
+repository does not include that universal engine and does not claim that raw Binius64 verification
+is economical on Ethereum.
+
+To build and create the optional SP1 wrapper proof (SP1 proving is intentionally kept outside the
+root Cargo workspace), install the SP1 6.6.0 toolchain first (`sp1up -v 6.6.0`):
+
+```console
+cd sp1/guest
+cargo prove build --locked --output-directory ../elf
+cd ../..
+
+cargo run --release --manifest-path sp1/prover/Cargo.toml -- prove \
+  --elf sp1/elf/noir-binius-sp1-guest \
+  --vk_path examples/arithmetic/target/arithmetic.vk \
+  --proof_path examples/arithmetic/target/arithmetic.binius \
+  --output_path examples/arithmetic/target/arithmetic.sp1 \
+  --system groth16
+```
+
+The wrapper host performs native Binius verification before proving, and the guest verifies the
+same complete proof (including delegated recursive calls). Its public values bind the SHA-256 hash
+of the exact portable key and the SHA-256 hash of the ordered Solidity public inputs. SP1 setup and
+proving can require several gigabytes of RAM; use a sufficiently large host or the SP1 network.
+
 ## TypeScript
 
 The [`@noir-binius/backend`](packages/noir-binius-backend) package exposes a `BiniusBackend` with
@@ -100,6 +161,11 @@ const backend = new BiniusBackend(circuit.bytecode);
 const { witness } = await noir.execute({ x: 3, expected: 14 });
 const proofData = await backend.generateProof(witness);
 console.log(await backend.verifyProof(proofData));
+
+const directVerifier = await backend.generateSolidityVerifier();
+const wrappedVerifier = await backend.generateSolidityVerifier({
+  verifierTarget: 'evm-sp1',
+});
 ```
 
 The package invokes the native `noir-binius` executable and is currently Node.js-only. See its
