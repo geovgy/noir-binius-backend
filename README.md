@@ -85,7 +85,7 @@ cargo run --release -- write_vk \
   -b examples/arithmetic/target/arithmetic.json \
   -o examples/arithmetic/target/arithmetic.vk
 
-# Verify the original NBINZK01 Binius64 proof through a Binius64 verifier engine.
+# Verify the original NBINZK01 proof entirely inside the generated contract.
 cargo run --release -- write_solidity_verifier \
   -k examples/arithmetic/target/arithmetic.vk \
   -o examples/arithmetic/target/BiniusVerifier.sol \
@@ -102,18 +102,40 @@ The command also accepts the usual `--vk_path`, `--output_path`, `-t`, and `--op
 The two targets deliberately have the same `verify(bytes,bytes32[])` application ABI, but accept
 different proof formats:
 
-| target | accepted proof | verifier passed to the constructor | trade-off |
-| --- | --- | --- | --- |
-| `evm` (default) | the raw `NBINZK01` output of `noir-binius prove` | a Binius64 engine/precompile implementing `IBinius64Verifier` with this key registered by its SHA-256 hash | no wrapper assumption; very high verification cost |
-| `evm-sp1` | an `NBINSP11` envelope made by `noir-binius-sp1` | an SP1 verifier or `SP1VerifierGateway` with a route for the proof's verifier selector | succinct on-chain verification; requires an SP1 wrapper proof |
+| target | accepted proof | verification |
+| --- | --- | --- |
+| `evm` (default) | raw `NBINZK01` output of `noir-binius prove` | complete Binius64 ZK verification in Solidity/Yul in one contract |
+| `evm-sp1` | `NBINSP11` envelope made by `noir-binius-sp1` | SP1 wrapper verification through the separately deployed SP1 verifier |
 
-The direct adapter validates the proof envelope, circuit digest, proof parameters, and ordered Noir
-public inputs before asking the configured engine to verify the complete Binius64 transcript. It
-rejects verification keys containing delegated recursive calls because a plain Binius engine does
-not verify that backend-specific metadata. Use `evm-sp1` for those circuits. The direct target is
-intended for an EVM chain or integration that provides a Binius64 verifier engine/precompile; this
-repository does not include that universal engine and does not claim that raw Binius64 verification
-is economical on Ethereum.
+The default contract inherits `IVerifier` and exposes
+`verify(bytes calldata proof, bytes32[] calldata publicInputs) external view returns (bool)`.
+It checks the envelope and Noir inputs, reconstructs the exact SHA-256 Fiat-Shamir transcript,
+checks public wiring and the outer Spartan ZK proof, and verifies all combined BaseFold/FRI
+openings with GHASH-field arithmetic and Binius's custom SHA-256 Merkle compression. These
+operations execute in the contract, including SHA-256; there are no external calls or precompiles.
+
+Deploy `BiniusVerifier` with **no constructor arguments**, using Solidity 0.8.35,
+optimizer 200 runs, `viaIR`, and Osaka as tested. The constructor decodes and stores the complete
+circuit program. The deployed contract is immediately ready for `verify`;
+there is no upload function or subsequent initialization. Circuit data is generated
+from the verification key, independently of any proof or private witness.
+
+The implementation uses compact FRI loops, sparse matrix contractions and shared
+multilinear interpolations. With cold program storage, the native equality fixture
+measures about **485 million gas** and the compiled Noir arithmetic example at
+rate 3 measures about **613 million gas**. Decoding and installing the circuit data
+in the constructor costs about **101 million** and **228 million gas**, respectively.
+Both generated contracts fit the checked creation/runtime bytecode size limits.
+The local tests raise the gas limit for deployment and verification.
+The large `keccak_merkle` circuit currently exceeds the initcode data limit and
+generation returns an explicit error. See [measurements and verification design](docs/direct-solidity-verification.md).
+
+Proof bytes are separate from circuit-program bytes. The pinned native prover emits
+515,896-byte bundles for the compiled Noir arithmetic example at its default rate,
+or 373,976 bytes with `--log-inv-rate 3`. Those proofs are native-verified; Solidity
+does not add instructions to them. See the [proof-size recheck](docs/binius-proof-size.md).
+The direct generator rejects delegated recursive-proof metadata because those checks
+are performed separately by the backend and must not be omitted.
 
 To build and create the optional SP1 wrapper proof (SP1 proving is intentionally kept outside the
 root Cargo workspace), install the SP1 6.6.0 toolchain first (`sp1up -v 6.6.0`):
@@ -205,6 +227,20 @@ recursive proof:
 ```console
 RUSTFLAGS="-C target-cpu=native" scripts/e2e-full.sh
 ```
+
+The direct Solidity verification test generates a real ZK proof, generates and deploys the
+contract in Foundry's EVM, calls `IVerifier.verify` immediately after construction,
+and checks rejection of altered proofs and public inputs:
+
+```console
+scripts/solidity-e2e.sh
+# Run the same complete path for a compiled Noir example:
+scripts/solidity-e2e.sh arithmetic
+```
+
+This test executes the verification math in the EVM with raised local gas limits. It does not
+install an engine, mock a verifier, or allowlist proof hashes. `SKIP_NARGO=1` reuses an existing
+compiled Noir artifact and witness. `FORGE_BIN` and `NARGO_BIN` can select tool installations.
 
 ## License
 MIT

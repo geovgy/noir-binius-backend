@@ -40,8 +40,13 @@ describe('BiniusBackend', () => {
     const verificationKey = await backend.getVerificationKey();
     expect(verificationKey.length).toBeGreaterThan(0);
     const directVerifier = await backend.getSolidityVerifier(verificationKey);
-    expect(directVerifier).toContain('interface IBinius64Verifier');
+    expect(directVerifier).toContain('contract BiniusVerifier is IVerifier');
     expect(directVerifier).toContain('NBINZK01');
+    expect(directVerifier).toContain('function _mul(');
+    expect(directVerifier).toContain('function _compress(');
+    expect(directVerifier).not.toContain('staticcall');
+    expect(directVerifier).toContain('constructor()');
+    expect(directVerifier).not.toContain('loadVerificationProgramChunk');
     const wrappedVerifier = await backend.getSolidityVerifier(verificationKey, {
       verifierTarget: 'evm-sp1',
     });

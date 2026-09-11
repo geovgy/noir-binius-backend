@@ -17,6 +17,12 @@ anyhow = "1.0.102"
 binius-circuits = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
 binius-core = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
 binius-frontend = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
+binius-field = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
+binius-iop = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
+binius-math = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
+binius-ip = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
+binius-spartan-frontend = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
+binius-spartan-verifier = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
 binius-hash = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
 binius-prover = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
 binius-transcript = { git = "https://github.com/IrreducibleOSS/binius64", rev = "06fb4b86843d27930ee4af62781e6ac6acdecda7" }
@@ -30,6 +36,7 @@ rand = "0.10.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 sha2 = "0.10.9"
+lzma-rust2 = { version = "0.20", default-features = false, features = ["std", "encoder"] }
 
 [profile.release]
 lto = "thin"

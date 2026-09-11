@@ -52,10 +52,13 @@ const sameWrappedSource = await backend.getSolidityVerifier(key, {
 });
 ```
 
-`verifierTarget: 'evm'` accepts the original `NBINZK01` proof and delegates complete transcript
-verification to the `IBinius64Verifier` engine or precompile address supplied when the generated
-contract is deployed. The engine must have the generated contract's
-`BINIUS_VERIFICATION_KEY_HASH` registered; the package does not ship that universal engine.
+`verifierTarget: 'evm'` accepts the original `NBINZK01` proof. The generated `BiniusVerifier`
+inherits `IVerifier` and performs the complete Binius64 ZK verification in Solidity/Yul, including
+field arithmetic, the SHA-256 transcript, Spartan, BaseFold/FRI and Merkle openings. It takes no
+constructor arguments and makes no external calls. Its constructor decodes and stores the complete
+circuit program, so `verify` works immediately after deployment. There is no
+program-upload API. Deployment and verification require large gas budgets; see the repository
+[deployment instructions and measured costs](../../README.md#solidity-verifiers).
 `verifierTarget: 'evm-sp1'` accepts the `NBINSP11` wrapper created by the repository's
 `sp1/prover` binary and delegates succinct verification to an SP1 verifier gateway. Both generated
 contracts expose `verify(bytes, bytes32[])` and bind the ordered `ProofData.publicInputs`.

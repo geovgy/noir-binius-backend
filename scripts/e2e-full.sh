@@ -23,6 +23,7 @@ fixtures=(
   folded_predicate_false
   aes128
   hashes
+  keccak_merkle
   poseidon2
   ecdsa_k1
   ecdsa_r1

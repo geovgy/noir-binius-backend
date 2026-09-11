@@ -1,70 +1,65 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.28;
 
-/// @notice Interface for a registry-backed Binius64 verifier engine.
-/// @dev The engine resolves `verificationKeyHash` to the portable noir-binius
-///      verification key and verifies the raw `NBINZK01` proof transcript.
-interface IBinius64Verifier {
-    /// @return valid True only when the complete Binius64 verification succeeds.
-    function verifyProof(bytes32 verificationKeyHash, bytes calldata proof)
-        external
-        view
-        returns (bool valid);
+/// @notice The Noir Solidity verifier interface.
+interface IVerifier {
+    function verify(bytes calldata proof, bytes32[] calldata publicInputs)
+        external view returns (bool);
 }
 
-/// @notice Circuit-specific Noir adapter for direct Binius64 ZK-proof verification.
-/// @dev This target consumes a raw `noir-binius prove` proof. It does not accept
-///      an SP1 wrapper proof. Deploy it with a Binius64 verifier engine that has
-///      registered `BINIUS_VERIFICATION_KEY_HASH`.
-contract BiniusVerifier {
+/// @notice Verifies raw Binius64 zero-knowledge proofs inside this contract.
+/// @dev Generated for the pinned Binius64 protocol. Deployment initializes all
+///      circuit data. Every verification operation executes in this contract.
+contract BiniusVerifier is IVerifier {
     bytes8 private constant PROOF_MAGIC = 0x4e42494e5a4b3031; // "NBINZK01"
     uint256 private constant PROOF_FIXED_HEADER_LENGTH = 48;
     uint256 private constant BN254_SCALAR_MODULUS =
         21888242871839275222246405745257275088548364400416034343698204186575808495617;
 
-    bytes32 public constant BINIUS_VERIFICATION_KEY_HASH = hex"{{CIRCUIT_VKEY_HASH}}";
-    bytes32 public constant BINIUS_CIRCUIT_DIGEST = hex"{{CIRCUIT_DIGEST}}";
-    uint32 public constant BINIUS_LOG_INV_RATE = {{LOG_INV_RATE}};
-    uint32 public constant BINIUS_PUBLIC_WORDS = {{PUBLIC_WORD_COUNT}};
-    uint32 public constant NUMBER_OF_PUBLIC_INPUTS = {{PUBLIC_INPUT_COUNT}};
+    bytes32 private constant BINIUS_VERIFICATION_KEY_HASH = hex"{{CIRCUIT_VKEY_HASH}}";
+    bytes32 private constant BINIUS_CIRCUIT_DIGEST = hex"{{CIRCUIT_DIGEST}}";
+    uint32 private constant BINIUS_LOG_INV_RATE = {{LOG_INV_RATE}};
+    uint32 private constant BINIUS_PUBLIC_WORDS = {{PUBLIC_WORD_COUNT}};
+    uint32 private constant NUMBER_OF_PUBLIC_INPUTS = {{PUBLIC_INPUT_COUNT}};
     // One tag byte followed by either a bytes32 constant (tag 0) or four
     // big-endian uint32 public-word offsets (tag 1) for each Noir input.
     bytes private constant PUBLIC_INPUT_LAYOUT = hex"{{PUBLIC_INPUT_LAYOUT}}";
 
-    address public immutable biniusVerifier;
+    uint256 private constant EXPECTED_PROOF_LENGTH = {{PROOF_LENGTH}};
+    uint256 private constant REGISTER_COUNT = {{REGISTER_COUNT}};
+    uint256 private constant VERIFICATION_PROGRAM_LENGTH = {{PROGRAM_LENGTH}};
+    uint256 private constant ENCODED_PROGRAM_LENGTH = {{ENCODED_PROGRAM_LENGTH}};
+    bytes private verificationProgram;
 
-    error InvalidBiniusVerifier();
-
-    constructor(address verifier) {
-        // A chain-native verifier may be a code-less precompile. The boolean
-        // response is checked exactly, so an EOA or empty response still fails.
-        if (verifier == address(0)) revert InvalidBiniusVerifier();
-        biniusVerifier = verifier;
+    constructor() {
+        bytes memory data = _expandProgram(
+            _unlzma(hex"{{COMPRESSED_PROGRAM}}", ENCODED_PROGRAM_LENGTH), VERIFICATION_PROGRAM_LENGTH
+        );
+        assembly ("memory-safe") {
+            let length := mload(data)
+            // Initialize the complete program in this deployment transaction.
+            // The runtime only reads these slots.
+            sstore(verificationProgram.slot, add(mul(length, 2), 1))
+            mstore(0, verificationProgram.slot)
+            let slot := keccak256(0, 32)
+            for { let i := 0 } lt(i, length) { i := add(i, 32) } {
+                sstore(add(slot, shr(5, i)), mload(add(add(data, 32), i)))
+            }
+        }
     }
 
-    /// @notice Verifies a raw Binius64 proof against ordered Noir public inputs.
-    /// @dev Malformed proof data and verifier-engine reverts are reported as false.
+    /// @notice Verifies the full Binius ZK transcript and ordered Noir public inputs.
+    /// @dev No state is written. Invalid proofs return false. As with any EVM
+    ///      computation, the caller must provide enough gas to execute verification.
     function verify(bytes calldata proof, bytes32[] calldata publicInputs)
-        external
-        view
-        returns (bool)
+        external view override returns (bool)
     {
         if (!_validateEnvelope(proof, publicInputs)) return false;
-
-        (bool success, bytes memory result) = biniusVerifier.staticcall(
-            abi.encodeCall(
-                IBinius64Verifier.verifyProof,
-                (BINIUS_VERIFICATION_KEY_HASH, proof)
-            )
-        );
-        if (!success || result.length != 32) return false;
-
-        uint256 valid;
-        assembly ("memory-safe") {
-            valid := mload(add(result, 32))
-        }
-        return valid == 1;
+        if (proof.length != EXPECTED_PROOF_LENGTH) return false;
+        return _run(verificationProgram, proof);
     }
+
+{{RUNTIME}}
 
     function _validateEnvelope(bytes calldata proof, bytes32[] calldata publicInputs)
         private
@@ -79,19 +74,32 @@ contract BiniusVerifier {
             circuitDigest := calldataload(add(proof.offset, 8))
         }
         if (circuitDigest != BINIUS_CIRCUIT_DIGEST) return false;
-        if (_readU32LE(proof, 40) != BINIUS_LOG_INV_RATE) return false;
+        // The minimum header length above covers both fixed u32 fields.
+        if (_readLE(proof, 40, 4) != BINIUS_LOG_INV_RATE) return false;
 
-        uint256 publicWordCount = _readU32LE(proof, 44);
+        uint256 publicWordCount = _readLE(proof, 44, 4);
         if (publicWordCount != BINIUS_PUBLIC_WORDS) return false;
         if (publicInputs.length != NUMBER_OF_PUBLIC_INPUTS) return false;
 
         uint256 transcriptLengthOffset = PROOF_FIXED_HEADER_LENGTH + publicWordCount * 8;
         if (transcriptLengthOffset > proof.length - 8) return false;
-        uint256 transcriptLength = _readU64LE(proof, transcriptLengthOffset);
+        uint256 transcriptLength = _readLE(proof, transcriptLengthOffset, 8);
         if (transcriptLength == 0) return false;
         if (transcriptLength > type(uint256).max - transcriptLengthOffset - 8) return false;
         if (transcriptLengthOffset + 8 + transcriptLength != proof.length) return false;
 
+        return _validateNoirInputs(proof, publicInputs);
+    }
+
+    function _validateNoirInputs(bytes calldata proof, bytes32[] calldata publicInputs)
+        private pure returns (bool)
+    {
+        {{NOIR_INPUT_CHECKS}}
+    }
+
+    function _validateNoirInputsGeneric(bytes calldata proof, bytes32[] calldata publicInputs)
+        private pure returns (bool)
+    {
         bytes memory inputLayout = PUBLIC_INPUT_LAYOUT;
         uint256 layoutOffset;
         for (uint256 i = 0; i < publicInputs.length; ++i) {
@@ -135,30 +143,9 @@ contract BiniusVerifier {
         pure
         returns (uint256)
     {
-        return _readU64LE(proof, PROOF_FIXED_HEADER_LENGTH + index * 8);
-    }
-
-    function _readU32LE(bytes calldata input, uint256 offset)
-        private
-        pure
-        returns (uint32 value)
-    {
-        if (offset > input.length || input.length - offset < 4) return 0;
-        value = uint32(uint8(input[offset]))
-            | (uint32(uint8(input[offset + 1])) << 8)
-            | (uint32(uint8(input[offset + 2])) << 16)
-            | (uint32(uint8(input[offset + 3])) << 24);
-    }
-
-    function _readU64LE(bytes calldata input, uint256 offset)
-        private
-        pure
-        returns (uint64 value)
-    {
-        if (offset > input.length || input.length - offset < 8) return 0;
-        for (uint256 i = 0; i < 8; ++i) {
-            value |= uint64(uint256(uint8(input[offset + i])) << (8 * i));
-        }
+        // Generation checks index < BINIUS_PUBLIC_WORDS. Envelope validation
+        // establishes that this complete public-word region is in calldata.
+        return _readLE(proof, PROOF_FIXED_HEADER_LENGTH + index * 8, 8);
     }
 
     function _readU32BE(bytes memory input, uint256 offset)

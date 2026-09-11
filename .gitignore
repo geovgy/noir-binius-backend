@@ -5,12 +5,15 @@ packages/**/dist/
 *.proof
 solidity/cache/
 solidity/out/
+solidity/src/
 sp1/elf/
 
 *.md
 !README.md
 !SUPPORT.md
 !packages/**/README.md
+!docs/direct-solidity-verification.md
+!docs/binius-proof-size.md
 
 # Generated from a verified inner proof by `recursive-inputs --toml`.
 examples/recursive_aggregation/Prover.toml

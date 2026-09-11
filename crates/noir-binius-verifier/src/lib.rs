@@ -418,6 +418,11 @@ impl VerificationKey {
         self.artifact_digest
     }
 
+    /// The pinned verifier, including the derived Spartan circuit and FRI parameters.
+    pub const fn binius_verifier(&self) -> &ZKVerifier<StdHashSuite> {
+        &self.verifier
+    }
+
     /// Number of public Binius words encoded in every proof for this key.
     pub const fn public_word_count(&self) -> usize {
         self.verifier.constraint_system().n_inout

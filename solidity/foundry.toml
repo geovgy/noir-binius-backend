@@ -1,0 +1,14 @@
+[profile.default]
+src = "src"
+out = "out"
+cache_path = "cache"
+solc_version = "0.8.35"
+evm_version = "osaka"
+optimizer = true
+optimizer_runs = 200
+via_ir = true
+# The direct verifier currently exceeds ordinary block/transaction gas limits.
+# These limits are for measuring the implementation in a local EVM test only.
+gas_limit = 1000000000000
+memory_limit = 1073741824
+fs_permissions = [{ access = "read", path = "../target" }]

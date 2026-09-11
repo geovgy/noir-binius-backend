@@ -36,7 +36,7 @@ export type SolidityVerifierTarget = 'evm' | 'evm-sp1';
 
 export type SolidityVerifierOptions = BiniusProofOptions & {
   /**
-   * `evm` verifies the raw Binius64 proof through a configured verifier engine.
+   * `evm` verifies the raw Binius64 proof inside the generated Solidity contract.
    * `evm-sp1` verifies a succinct SP1 wrapper proof and is the lower-gas option.
    */
   verifierTarget?: SolidityVerifierTarget;
@@ -280,8 +280,7 @@ export class BiniusBackend {
   async generateSolidityVerifier(
     options: SolidityVerifierOptions = {},
   ): Promise<string> {
-    // Validate before compiling a verification key, since key generation can be
-    // substantially more expensive than rendering the Solidity adapter.
+    // Validate before constructing the key and specializing its verifier equations.
     const verifierTarget = validateSolidityVerifierTarget(
       options.verifierTarget ?? 'evm',
     );
