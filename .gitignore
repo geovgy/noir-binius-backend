@@ -5,7 +5,6 @@ packages/**/dist/
 *.proof
 solidity/cache/
 solidity/out/
-solidity/src/
 sp1/elf/
 
 *.md
