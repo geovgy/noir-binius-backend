@@ -7,7 +7,10 @@ use binius_spartan_frontend::constraint_system::{MulConstraint, WitnessIndex, Wi
 use binius_spartan_verifier::IOPVerifier;
 use std::collections::BTreeMap;
 
-fn varint(out: &mut Vec<u8>, mut value: u32) {
+fn varint(out: &mut Vec<u8>, value: u32) {
+    varint_wide(out, u64::from(value));
+}
+fn varint_wide(out: &mut Vec<u8>, mut value: u64) {
     while value >= 128 {
         out.push((value as u8) | 128);
         value >>= 7;
@@ -195,6 +198,7 @@ pub(super) fn encode_matrix(
     segment: WitnessSegment,
     nx: usize,
     ny: usize,
+    factored: bool,
 ) -> Vec<u8> {
     let mut entries = vec![];
     for (r, row) in rows.iter().enumerate() {
@@ -203,6 +207,9 @@ pub(super) fn encode_matrix(
                 entries.push((r as u32, index.index, 1u8 << side));
             }
         }
+    }
+    if factored && let Some(data) = factored_wiring::encode(&entries, nx, ny) {
+        return data;
     }
     encode_points(entries, nx, ny)
 }
@@ -263,12 +270,17 @@ pub(super) fn encode_points(mut entries: Vec<(u32, u32, u8)>, nx: usize, ny: usi
     varint(&mut data, fragments.len() as u32);
     let mut previous = [0; 6];
     for run in fragments {
+        // The next run often continues one or both affine coordinates. This
+        // prediction is only an encoding: deltas recover all six exact values.
+        // The predicted endpoint can lie beyond u32 even when every entry fits.
+        previous[2] += previous[1] * previous[4];
+        previous[3] += previous[1] * previous[5];
         for i in 0..6 {
             let delta = run[i] - previous[i];
             previous[i] = run[i];
-            varint(
+            varint_wide(
                 &mut data,
-                u32::try_from(if delta < 0 { -2 * delta - 1 } else { 2 * delta }).unwrap(),
+                u64::try_from(if delta < 0 { -2 * delta - 1 } else { 2 * delta }).unwrap(),
             );
         }
     }
@@ -280,6 +292,7 @@ pub(super) fn verify(
     precommit: BaseFoldOracle,
     public: &[E],
     channel: &mut BaseFoldVerifierChannel<'_, F, Channel>,
+    factored_wiring: bool,
 ) -> Result<()> {
     let cs = outer.constraint_system();
     assert_eq!(public.len(), 1 << cs.log_public());
@@ -314,6 +327,10 @@ pub(super) fn verify(
         PublicWiring::build(columns, &x, lambda).into(),
     ));
     let x_array = E::node(Op::Array(x.iter().map(|v| v.0).collect()));
+    // Both outer matrices have the same row point. Emit its preparation at
+    // the first opening evaluation, then share that descriptor. Each matrix
+    // still evaluates its own column point and complete sparse polynomial.
+    let prepared_x = std::rc::Rc::new(std::cell::Cell::new(None));
     let precommit_claim = channel.recv_one()?;
     let private_claim = a + lambda * (b + lambda * c) + public_eval + precommit_claim;
     for (oracle, claim, segment, ny) in [
@@ -335,12 +352,19 @@ pub(super) fn verify(
             segment,
             nx,
             ny,
+            factored_wiring && segment == WitnessSegment::Precommit,
         )));
+        let prepared_x = prepared_x.clone();
         channel.verify_oracle_relation(
             oracle,
             Box::new(move |y| {
                 let y_array = E::node(Op::Array(y.iter().map(|v| v.0).collect()));
-                E::node(Op::Wiring(matrix.0, x_array.0, y_array.0, lambda.0, 1))
+                let row_point = prepared_x.get().unwrap_or_else(|| {
+                    let point = E::node(Op::Wiring(matrix.0, x_array.0, y_array.0, lambda.0, 0));
+                    prepared_x.set(Some(point));
+                    point
+                });
+                E::node(Op::Wiring(matrix.0, row_point.0, y_array.0, lambda.0, 4))
             }),
             claim,
         )?;
@@ -356,8 +380,7 @@ pub(super) fn verify(
     Ok(())
 }
 
-#[cfg(test)]
-pub(super) fn evaluate_matrix(data: &[u8], x: &[F], y: &[F], lambda: F, _target: u8) -> F {
+pub(super) fn decode_matrix(data: &[u8]) -> (usize, usize, Vec<Run>) {
     fn read(data: &mut &[u8]) -> usize {
         let mut value = 0;
         let mut shift = 0;
@@ -371,6 +394,30 @@ pub(super) fn evaluate_matrix(data: &[u8], x: &[F], y: &[F], lambda: F, _target:
             shift += 7;
         }
     }
+    let mut data = data;
+    let nx = read(&mut data);
+    let ny = read(&mut data);
+    let count = read(&mut data);
+    let mut run = [0i64; 6];
+    let mut runs = Vec::with_capacity(count);
+    for _ in 0..count {
+        run[2] += run[1] * run[4];
+        run[3] += run[1] * run[5];
+        for item in &mut run {
+            let n = i64::try_from(read(&mut data)).unwrap();
+            *item += if n & 1 == 0 { n / 2 } else { -n / 2 - 1 };
+        }
+        runs.push(run);
+    }
+    assert!(data.is_empty());
+    (nx, ny, runs)
+}
+
+#[cfg(test)]
+pub(super) fn evaluate_matrix(data: &[u8], x: &[F], y: &[F], lambda: F, _target: u8) -> F {
+    if data.first() == Some(&factored_wiring::MARKER) {
+        return factored_wiring::evaluate(data, x, y, lambda);
+    }
     fn tensor(point: &[F]) -> Vec<F> {
         let mut v = vec![F::ONE];
         for &r in point {
@@ -383,20 +430,13 @@ pub(super) fn evaluate_matrix(data: &[u8], x: &[F], y: &[F], lambda: F, _target:
         }
         v
     }
-    let mut data = data;
-    assert_eq!(read(&mut data), x.len());
-    assert_eq!(read(&mut data), y.len());
-    let count = read(&mut data);
+    let (nx, ny, runs) = decode_matrix(data);
+    assert_eq!(nx, x.len());
+    assert_eq!(ny, y.len());
     let x = tensor(x);
     let y = tensor(y);
-    let mut run = [0i64; 6];
     let mut result = [F::ZERO; 3];
-    for _ in 0..count {
-        for item in &mut run {
-            let n = read(&mut data) as i64;
-            *item += if n & 1 == 0 { n / 2 } else { -n / 2 - 1 };
-        }
-        let [mask, n, r, c, dr, dc] = run;
+    for [mask, n, r, c, dr, dc] in runs {
         let mut sum = F::ZERO;
         for i in 0..n {
             sum += x[(r + i * dr) as usize] * y[(c + i * dc) as usize];
@@ -407,6 +447,43 @@ pub(super) fn evaluate_matrix(data: &[u8], x: &[F], y: &[F], lambda: F, _target:
             }
         }
     }
-    assert!(data.is_empty());
     result[0] + lambda * (result[1] + lambda * result[2])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn matrix_encoding_preserves_full_width_and_negative_strides() {
+        let data = encode_points(
+            vec![
+                (0x80000000, u32::MAX, 1),
+                (0xc0000000, 0x80000000, 1),
+                (u32::MAX, 0, 1),
+            ],
+            32,
+            32,
+        );
+        let (nx, ny, runs) = decode_matrix(&data);
+        assert_eq!((nx, ny), (32, 32));
+        // The first run predicts row 2^32 and column 1 for the second run.
+        // Its initial coordinates and strides also need >32-bit zigzag values.
+        assert_eq!(
+            runs,
+            vec![
+                [1, 2, 0x80000000, 0xffffffff, 0x40000000, -0x7fffffff],
+                [1, 1, 0xffffffff, 0, 0, 0],
+            ]
+        );
+    }
+
+    #[test]
+    fn matrix_encoding_preserves_characteristic_two_cancellation() {
+        let entries = vec![(0, 0, 1), (0, 0, 1), (0, 1, 1), (0, 1, 2)];
+        let (nx, ny, runs) = decode_matrix(&encode_points(entries, 1, 1));
+        assert_eq!((nx, ny), (1, 1));
+        assert_eq!(runs, vec![[3, 1, 0, 1, 0, 0]]);
+        assert_eq!(decode_matrix(&encode_points(vec![], 0, 0)), (0, 0, vec![]));
+    }
 }

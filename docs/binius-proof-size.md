@@ -21,10 +21,9 @@ For this circuit, rate 3 gives the smallest native serialization in the
 checked range 1–13. The exact native FRI size calculation and an independent
 fold-arity minimization agree over that range. At rates 14 and above, the
 terminal vector alone occupies at least `16 * 2^14 = 262,144` bytes.
-Consequently a 200 KB target cannot be reached merely by changing the
-existing rate setting for this compiled circuit. This is a statement about
-this backend, circuit and serialization, not a lower bound on other Binius
-protocols or new proof encodings.
+These measurements describe this backend, circuit and serialization. They do
+not establish a lower bound on other Binius protocols or new proof encodings.
+The optimization target is verification gas; proof size is reported for context.
 
 At rate 3, the 373,888-byte transcript comprises:
 

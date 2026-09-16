@@ -13,8 +13,12 @@ contract FullVerifierTest {
     Vm constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
     event log_named_uint(string name, uint256 value);
 
+    function _deploy() internal virtual returns (BiniusVerifier) {
+        return new BiniusVerifier();
+    }
+
     function testQueryAuthenticationLanes() public {
-        BiniusVerifier verifier = new BiniusVerifier();
+        BiniusVerifier verifier = _deploy();
         bytes memory proof = vm.readFileBinary(string.concat(vm.projectRoot(), "/../target/solidity-test.binius"));
         bytes memory inputBytes = vm.readFileBinary(string.concat(vm.projectRoot(), "/../target/solidity-test.inputs"));
         bytes memory positions = vm.readFileBinary(string.concat(vm.projectRoot(), "/../target/solidity-test.corruptions"));
@@ -25,8 +29,8 @@ contract FullVerifierTest {
             }
         }
         // The native query schedule selects one Merkle sibling in each of the
-        // first four lanes and in the final path. Each mutation must fail.
-        require(positions.length == 40, "missing native path offsets");
+        // first seven lanes and in the final path. Each mutation must fail.
+        require(positions.length == 64, "missing native path offsets");
         for (uint256 i; i < positions.length; i += 8) {
             uint256 position;
             assembly ("memory-safe") { position := shr(192, mload(add(add(positions, 32), i))) }
@@ -38,7 +42,7 @@ contract FullVerifierTest {
 
     function testFullBiniusProof() public {
         uint256 deploymentStart = gasleft();
-        BiniusVerifier verifier = new BiniusVerifier();
+        BiniusVerifier verifier = _deploy();
         emit log_named_uint("deployment gas", deploymentStart - gasleft());
         bytes memory proof = vm.readFileBinary(string.concat(vm.projectRoot(), "/../target/solidity-test.binius"));
         bytes memory inputBytes = vm.readFileBinary(string.concat(vm.projectRoot(), "/../target/solidity-test.inputs"));
@@ -82,6 +86,13 @@ contract FullVerifierTest {
         uint256 words;
         for (uint256 i; i < 4; i++) {
             words |= uint256(uint8(proof[44 + i])) << (8 * i);
+        }
+        uint256[4] memory headerOffsets = [uint256(0), 40, 44, 48 + 8 * words];
+        for (uint256 i; i < headerOffsets.length; ++i) {
+            uint256 offset = headerOffsets[i];
+            proof[offset] ^= bytes1(uint8(128));
+            require(!verifier.verify(proof, inputs), "bad envelope field accepted");
+            proof[offset] ^= bytes1(uint8(128));
         }
         proof[56 + 8 * words + 40] ^= bytes1(uint8(1));
         require(!verifier.verify(proof, inputs), "bad transcript accepted");

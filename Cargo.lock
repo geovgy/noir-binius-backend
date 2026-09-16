@@ -1220,6 +1220,7 @@ dependencies = [
  "binius-verifier",
  "blake3",
  "clap",
+ "digest 0.11.3",
  "lzma-rust2",
  "noir-binius-verifier",
  "num-bigint 0.5.1",
@@ -1227,6 +1228,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "sha3",
 ]
 
 [[package]]

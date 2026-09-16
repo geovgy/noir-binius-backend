@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-pragma solidity ^0.8.28;
+pragma solidity ^0.8.35;
 
 /// @notice The Noir Solidity verifier interface.
 interface IVerifier {
@@ -26,7 +26,13 @@ contract BiniusVerifier is IVerifier {
     bytes private constant PUBLIC_INPUT_LAYOUT = hex"{{PUBLIC_INPUT_LAYOUT}}";
 
     uint256 private constant EXPECTED_PROOF_LENGTH = {{PROOF_LENGTH}};
+    // Bounds observed transcript bytes and scalar leaf hashing, independently
+    // of the much larger collection of unobserved query decommitments.
+    uint256 private constant HASH_CAPACITY = {{HASH_CAPACITY}};
     uint256 private constant REGISTER_COUNT = {{REGISTER_COUNT}};
+    // Top-level operands use the smallest width that fits every fixed value.
+    // Circuit-table contents and 128-bit field constants keep their encodings.
+    uint256 private constant PROGRAM_WORD_BYTES = {{PROGRAM_WORD_BYTES}};
     uint256 private constant VERIFICATION_PROGRAM_LENGTH = {{PROGRAM_LENGTH}};
     uint256 private constant ENCODED_PROGRAM_LENGTH = {{ENCODED_PROGRAM_LENGTH}};
     bytes private verificationProgram;
@@ -54,9 +60,46 @@ contract BiniusVerifier is IVerifier {
     function verify(bytes calldata proof, bytes32[] calldata publicInputs)
         external view override returns (bool)
     {
+
+        // NBINH001 adds only digest hints. The original envelope is checked
+        // below and all hinted hashes are recomputed before returning true.
+        bytes calldata hints;
+        assembly ("memory-safe") {
+            hints.offset := 0
+            hints.length := 0
+            // A matching marker in a short slice is rejected by the complete
+            // length check before either calldata slice is formed.
+            if eq(shr(192, calldataload(proof.offset)), 0x4e42494e48303031) {
+                let core := add(EXPECTED_PROOF_LENGTH, 8)
+                let tail := sub(proof.length, core)
+                if or(iszero(gt(proof.length, core)), and(tail, 31)) {
+                    mstore(0, 0)
+                    return(0, 32)
+                }
+                hints.offset := add(proof.offset, core)
+                hints.length := tail
+                proof.offset := add(proof.offset, 8)
+                proof.length := EXPECTED_PROOF_LENGTH
+            }
+        }
         if (!_validateEnvelope(proof, publicInputs)) return false;
-        if (proof.length != EXPECTED_PROOF_LENGTH) return false;
-        return _run(verificationProgram, proof);
+        // The constructor is the only writer. Its exact length is fixed by
+        // generation, so copy the immutable data directly from its own slots.
+        bytes memory program;
+        assembly ("memory-safe") {
+            program := mload(0x40)
+            mstore(program, VERIFICATION_PROGRAM_LENGTH)
+            let start := add(program, 32)
+            let end := add(start, VERIFICATION_PROGRAM_LENGTH)
+            mstore(0x40, and(add(end, 31), not(31)))
+            mstore(0, verificationProgram.slot)
+            let slot := keccak256(0, 32)
+            for { let p := start } lt(p, end) { p := add(p, 32) } {
+                mstore(p, sload(slot))
+                slot := add(slot, 1)
+            }
+        }
+        return _run(program, proof, hints);
     }
 
 {{RUNTIME}}
@@ -66,27 +109,26 @@ contract BiniusVerifier is IVerifier {
         pure
         returns (bool)
     {
-        if (proof.length < PROOF_FIXED_HEADER_LENGTH + 8) return false;
-        if (bytes8(proof[0:8]) != PROOF_MAGIC) return false;
-
+        // Generation checks that this length includes the complete header,
+        // public words, length word, and a nonempty transcript.
+        if (proof.length != EXPECTED_PROOF_LENGTH) return false;
+        bytes8 magic;
         bytes32 circuitDigest;
         assembly ("memory-safe") {
+            magic := calldataload(proof.offset)
             circuitDigest := calldataload(add(proof.offset, 8))
         }
+        if (magic != PROOF_MAGIC) return false;
         if (circuitDigest != BINIUS_CIRCUIT_DIGEST) return false;
-        // The minimum header length above covers both fixed u32 fields.
-        if (_readLE(proof, 40, 4) != BINIUS_LOG_INV_RATE) return false;
-
-        uint256 publicWordCount = _readLE(proof, 44, 4);
-        if (publicWordCount != BINIUS_PUBLIC_WORDS) return false;
+        // Compare both adjacent little-endian u32 metadata fields together.
+        if (_readLE(proof, 40, 8) != (uint256(BINIUS_LOG_INV_RATE) | (uint256(BINIUS_PUBLIC_WORDS) << 32))) {
+            return false;
+        }
         if (publicInputs.length != NUMBER_OF_PUBLIC_INPUTS) return false;
 
-        uint256 transcriptLengthOffset = PROOF_FIXED_HEADER_LENGTH + publicWordCount * 8;
-        if (transcriptLengthOffset > proof.length - 8) return false;
+        uint256 transcriptLengthOffset = PROOF_FIXED_HEADER_LENGTH + uint256(BINIUS_PUBLIC_WORDS) * 8;
         uint256 transcriptLength = _readLE(proof, transcriptLengthOffset, 8);
-        if (transcriptLength == 0) return false;
-        if (transcriptLength > type(uint256).max - transcriptLengthOffset - 8) return false;
-        if (transcriptLengthOffset + 8 + transcriptLength != proof.length) return false;
+        if (transcriptLength != EXPECTED_PROOF_LENGTH - transcriptLengthOffset - 8) return false;
 
         return _validateNoirInputs(proof, publicInputs);
     }

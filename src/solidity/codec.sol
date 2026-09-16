@@ -1,9 +1,9 @@
-    // Raw LZMA1, fixed lc=1/lp=0/pb=2. The fixed constructor
+    // Raw LZMA1, fixed lc=1/lp=0/pb=0. The fixed constructor
     // literal supplies the compressed stream; proof bytes never enter it.
     function _unlzma(bytes memory compressed, uint256 size) private pure returns (bytes memory decoded) {
         decoded = new bytes(size + 32);
-        uint256[3382] memory probabilities;
-        uint256[9] memory state;
+        uint256 probabilities;
+        uint256 state;
         assembly ("memory-safe") {
             // State: range, code, input pointer, probability pointer, rep[0..3], LZ state.
             function normalize(c) {
@@ -78,6 +78,12 @@
                 }
                 for {} lt(value, 256) {} { value := add(shl(1, value), bit(c, add(base, value))) }
             }
+            // Every probability is set to 1024 below. Allocate this workspace
+            // directly so Solidity does not first zero the whole table.
+            probabilities := mload(0x40)
+            state := add(probabilities, 108224)
+            mstore(0x40, add(state, 288))
+            calldatacopy(state, calldatasize(), 288)
             let start := add(decoded, 32)
             let out := start
             let end := add(start, size)
@@ -89,7 +95,7 @@
             mstore(add(state, 96), probabilities)
             for { let p := probabilities } lt(p, add(probabilities, 108224)) { p := add(p, 32) } { mstore(p, 1024) }
             for {} lt(out, end) {} {
-                let pos := and(sub(out, start), 3)
+                let pos := 0
                 let machine := mload(add(state, 256))
                 switch bit(state, add(shl(4, machine), pos))
                 case 0 {
@@ -206,8 +212,8 @@
                 let slot := add(base, shl(5, lane))
                 value := add(mload(slot), xor(shr(1, n), sub(0, and(n, 1))))
                 mstore(slot, value)
-                mstore(out, shl(224, value))
-                next := add(out, 4)
+                mstore(out, shl(sub(256, mul(8, PROGRAM_WORD_BYTES)), value))
+                next := add(out, PROGRAM_WORD_BYTES)
             }
             let p := add(encoded, 32)
             let end := add(p, mload(encoded))

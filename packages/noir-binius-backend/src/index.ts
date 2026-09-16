@@ -8,4 +8,8 @@ export {
   type RecursiveProofArtifacts,
   type SolidityVerifierOptions,
   type SolidityVerifierTarget,
+  type DirectVerifierAbi,
+  type VerifierDeployment,
+  type VerifierDeploymentOptions,
+  withVerifierProgram,
 } from './backend.js';

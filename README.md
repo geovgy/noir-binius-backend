@@ -99,13 +99,61 @@ cargo run --release -- write_solidity_verifier \
 ```
 
 The command also accepts the usual `--vk_path`, `--output_path`, `-t`, and `--optimized` spellings.
+For the optional factored wiring evaluator, pass `--solidity_compiler /path/to/solc`.
+This requires solc 0.8.35 during generation and compresses the complete compiled
+runtime into the constructor. It reduces verification gas at the cost of higher
+deployment gas; the contract still takes no constructor arguments and is ready
+immediately. Use the compiler settings printed in the generated source. See
+[the measured tradeoff](docs/direct-solidity-verification.md#optional-factored-deployment).
+
+For compact creation bytecode and a larger fixed-matrix optimization budget, use
+the explicit deployment-artifact command:
+
+```console
+cargo run --release -- write_verifier_deployment \
+  -k examples/arithmetic/target/arithmetic.vk \
+  -o examples/arithmetic/target/BiniusVerifier.deployment.json \
+  --solc /path/to/solc-0.8.35
+```
+
+Deploy the JSON artifact's `bytecode` with its `abi` and **no arguments**. It also
+contains the complete `BiniusVerifier is IVerifier` Solidity implementation, Yul
+creation source, compiler settings, and runtime bytecode. Generation checks that
+the constructor installs the runtime compiled from that implementation. The
+ordinary constructor compiled directly from the accompanying Solidity source can
+exceed the initcode limit; use the artifact's tested Yul creation bytecode for this
+mode. The constructor can derive the complete fixed matrix before storing it;
+no installation call is needed after deployment. In the last completed four-key
+generator validation, the rate-3 example used 168.6 million verification call gas
+and 518.1 million creation gas.
+An artifact advertising `construction.programInput` also accepts the public
+circuit bytes alongside the proof, authenticated against the constructor's
+stored digest. `withVerifierProgram(proof, deployment)` prepares this optional
+input; that validation measured 159.3 million call gas, or 135.4 million with fully checked SHA
+hints. Bare native proofs remain accepted. The native proof is 373,976 bytes;
+the circuit bytes are additional calldata. The 10-million-gas target remains unmet.
+See [compact deployment](docs/direct-solidity-verification.md#compact-yul-deployment).
+
 The two targets deliberately have the same `verify(bytes,bytes32[])` application ABI, but accept
 different proof formats:
 
 | target | accepted proof | verification |
 | --- | --- | --- |
-| `evm` (default) | raw `NBINZK01` output of `noir-binius prove` | complete Binius64 ZK verification in Solidity/Yul in one contract |
+| `evm` (default) | raw `NBINZK01`, optionally with checked `NBINH001` SHA hints | complete Binius64 ZK verification in Solidity/Yul in one contract |
 | `evm-sp1` | `NBINSP11` envelope made by `noir-binius-sp1` | SP1 wrapper verification through the separately deployed SP1 verifier |
+
+For optional hash batching, prepare proof bytes for that same direct contract:
+
+```console
+cargo run --release -- write_solidity_proof \
+  -k examples/arithmetic/target/arithmetic.vk \
+  -p examples/arithmetic/target/arithmetic.binius \
+  -o examples/arithmetic/target/arithmetic.hinted
+```
+
+The contract recomputes and checks every supplied SHA digest. This preserves the
+native proof and all verifier equations. The original `.binius` file remains
+accepted by the contract and is still used for native verification.
 
 The default contract inherits `IVerifier` and exposes
 `verify(bytes calldata proof, bytes32[] calldata publicInputs) external view returns (bool)`.
@@ -115,16 +163,28 @@ openings with GHASH-field arithmetic and Binius's custom SHA-256 Merkle compress
 operations execute in the contract, including SHA-256; there are no external calls or precompiles.
 
 Deploy `BiniusVerifier` with **no constructor arguments**, using Solidity 0.8.35,
-optimizer 200 runs, `viaIR`, and Osaka as tested. The constructor decodes and stores the complete
+optimizer 200 runs, `viaIR`, Osaka, and `metadata.bytecodeHash: "none"` as tested. The constructor decodes and stores the complete
 circuit program. The deployed contract is immediately ready for `verify`;
 there is no upload function or subsequent initialization. Circuit data is generated
 from the verification key, independently of any proof or private witness.
 
+The last completed four-key public-generation validation of `write_verifier_deployment`
+measured the arithmetic rate-3 proof at **135,395,587 call gas** with authenticated public circuit data and
+checked SHA hints, or **168,627,101 call gas** for the original proof alone.
+Its constructor takes no arguments; its 49,065-byte creation code installs the
+24,492-byte runtime and all circuit data. The public generator emits exactly the
+creation/runtime bytes tested with two independently blinded zk proofs. These
+measurements include caller ABI encoding and exclude transaction intrinsic/calldata
+gas. **The 10-million-gas target remains unmet.**
+
 The implementation uses compact FRI loops, sparse matrix contractions and shared
-multilinear interpolations. With cold program storage, the native equality fixture
-measures about **485 million gas** and the compiled Noir arithmetic example at
-rate 3 measures about **613 million gas**. Decoding and installing the circuit data
-in the constructor costs about **101 million** and **228 million gas**, respectively.
+multilinear interpolations. For the source-returning APIs, with cold program storage, the native equality fixture
+measures about **149.8 million gas with checked SHA hints** and the compiled Noir arithmetic example at
+rate 3 measures about **187.7 million gas with checked SHA hints** (211.2 million for
+the original-proof path). The hinted rate-3 envelope is 389,120 bytes, including
+the 373,976-byte native proof and 15,136 bytes of hints; the 10-million-gas target
+remains unmet. Decoding and installing the circuit data
+in the constructor costs about **88 million** and **190 million gas**, respectively.
 Both generated contracts fit the checked creation/runtime bytecode size limits.
 The local tests raise the gas limit for deployment and verification.
 The large `keccak_merkle` circuit currently exceeds the initcode data limit and

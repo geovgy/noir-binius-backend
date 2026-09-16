@@ -40,6 +40,104 @@ export type SolidityVerifierOptions = BiniusProofOptions & {
    * `evm-sp1` verifies a succinct SP1 wrapper proof and is the lower-gas option.
    */
   verifierTarget?: SolidityVerifierTarget;
+  /**
+   * Optional solc 0.8.35 executable for factored wiring and compressed runtime
+   * deployment. The emitted source requires its documented compiler settings.
+   * This lowers verification gas and increases deployment gas for the evm target.
+   */
+  solidityCompiler?: string;
+};
+
+export type VerifierDeploymentOptions = BiniusProofOptions & {
+  /** solc 0.8.35 executable used to compile the complete direct verifier. */
+  solidityCompiler: string;
+};
+
+/** ABI of the Solidity IVerifier implementation contained in every deployment. */
+export type DirectVerifierAbi = readonly [
+  { type: 'constructor'; inputs: readonly []; stateMutability: 'nonpayable' },
+  {
+    type: 'function'; name: 'verify'; stateMutability: 'view';
+    inputs: readonly [
+      { name: 'proof'; type: 'bytes'; internalType: 'bytes' },
+      { name: 'publicInputs'; type: 'bytes32[]'; internalType: 'bytes32[]' },
+    ];
+    outputs: readonly [{ name: ''; type: 'bool'; internalType: 'bool' }];
+  },
+];
+
+/** Deploy bytecode with abi and no arguments. Both source forms are included
+ * for review; the ordinary Solidity constructor can exceed its size limit. */
+export type VerifierDeployment = {
+  contractName: 'BiniusVerifier';
+  abi: DirectVerifierAbi;
+  bytecode: `0x${string}`;
+  deployedBytecode: `0x${string}`;
+  soliditySource: string;
+  yulSource: string;
+  compilerSettings: {
+    version: '0.8.35';
+    solidity: {
+      optimizer: { enabled: true; runs: 200 }; viaIR: true;
+      evmVersion: 'osaka'; metadata: { bytecodeHash: 'none' };
+    };
+    yul: { optimizer: { enabled: true; runs: 200 }; evmVersion: 'osaka' };
+  };
+  initcodeBytes: number;
+  runtimeBytes: number;
+  solidityInitcodeBytes: number;
+  /** Circuit review data; deployment still takes only bytecode and no arguments. */
+  construction?: {
+    kind: 'affine-matrix-v1';
+    verificationProgram: string;
+    programKeccak256: string;
+    precursorLength: number;
+    matrixLengthOffset: number;
+    matrixInputOffset: number;
+    matrixOutputOffset: number;
+    affineLength: number;
+    matrixLength: number;
+    escapedMatrixLength: boolean;
+    /** Constructor expands the compact public graph to exact u16 child references. */
+    publicExpansion?: {
+      kind: 'relative-u16-v1' | 'grouped-relative-u16-v1';
+      sourceLength: number;
+      instructionOffset: number;
+      fixedLength: number;
+    };
+    /** Constructor orders the same private scalar DAG by depth and operation code. */
+    privateGrouping?: {
+      kind: 'depth-code-grouped-u16-v1' | 'depth-code-product-terminal-u16-v1';
+      originalLength: number;
+      nodes: number;
+      groups: number;
+      maxDepth: number;
+    };
+    /** Generator groups the fixed precommit DAG without changing its equations. */
+    precommitGrouping?: {
+      kind: 'code-grouped-u16-v1';
+      instructionOffset: number;
+      originalLength: number;
+      nodes: number;
+      groups: number;
+      maxDepth: number;
+    };
+    storageCompression?: {
+      kind: 'literal-copy-v1';
+      minimumMatch: number;
+      storedProgram: string;
+      storedProgramKeccak256: string;
+      packingHeaders: string;
+    };
+    /** Optional NBINK001 || public program || native/hinted proof input.
+     * The contract checks this fixed program digest before running the proof. */
+    programInput?: {
+      kind: 'keccak-calldata-v1';
+      magic: '0x4e42494e4b303031';
+      programLength: number;
+      programKeccak256: `0x${string}`;
+    };
+  };
 };
 
 export type BiniusBackendOptions = BiniusProofOptions & {
@@ -260,6 +358,17 @@ export class BiniusBackend {
       const verifierTarget = validateSolidityVerifierTarget(
         options.verifierTarget ?? 'evm',
       );
+      if (options.solidityCompiler !== undefined) {
+        if (
+          verifierTarget !== 'evm' ||
+          typeof options.solidityCompiler !== 'string' ||
+          options.solidityCompiler.length === 0
+        ) {
+          throw new BiniusBackendError(
+            'solidityCompiler must be a non-empty executable path for the evm target',
+          );
+        }
+      }
       const keyPath = join(directory, 'verification-key.binius');
       const verifierPath = join(directory, 'BiniusVerifier.sol');
       await writeFile(keyPath, verificationKey);
@@ -271,6 +380,9 @@ export class BiniusBackend {
         verifierPath,
         '--verifier_target',
         verifierTarget,
+        ...(options.solidityCompiler === undefined
+          ? []
+          : ['--solidity_compiler', options.solidityCompiler]),
       ]);
       return readFile(verifierPath, 'utf8');
     });
@@ -291,6 +403,37 @@ export class BiniusBackend {
     });
   }
 
+  /** Return a direct verifier's ABI, compact creation bytecode and complete
+   * Solidity/Yul sources. The contract installs its own data during creation. */
+  async getVerifierDeployment(
+    verificationKey: Uint8Array,
+    options: VerifierDeploymentOptions,
+  ): Promise<VerifierDeployment> {
+    if (!(verificationKey instanceof Uint8Array) || verificationKey.length === 0) {
+      throw new BiniusBackendError('verificationKey must be a non-empty Uint8Array');
+    }
+    validateDeploymentCompiler(options?.solidityCompiler);
+    return this.withWorkspace(async ({ directory }) => {
+      const keyPath = join(directory, 'verification-key.binius');
+      const outputPath = join(directory, 'BiniusVerifier.deployment.json');
+      await writeFile(keyPath, verificationKey);
+      await runBinary(this.binaryPath, [
+        'write_verifier_deployment', '--vk_path', keyPath,
+        '--output_path', outputPath, '--solidity_compiler', options.solidityCompiler,
+      ]);
+      return parseVerifierDeployment(await readFile(outputPath, 'utf8'));
+    });
+  }
+
+  /** Compute the circuit key and return its single-deployment direct verifier. */
+  async generateVerifierDeployment(
+    options: VerifierDeploymentOptions,
+  ): Promise<VerifierDeployment> {
+    validateDeploymentCompiler(options?.solidityCompiler);
+    const key = await this.getVerificationKey(options);
+    return this.getVerifierDeployment(key, options);
+  }
+
   /** No long-lived native process is retained, so destruction is a no-op. */
   async destroy(): Promise<void> {}
 
@@ -306,6 +449,89 @@ export class BiniusBackend {
       await rm(directory, { force: true, recursive: true });
     }
   }
+}
+
+function validateDeploymentCompiler(compiler: unknown): asserts compiler is string {
+  if (typeof compiler !== 'string' || compiler.length === 0) {
+    throw new BiniusBackendError('solidityCompiler must be a non-empty solc 0.8.35 executable path');
+  }
+}
+
+function parseVerifierDeployment(source: string): VerifierDeployment {
+  let artifact: VerifierDeployment;
+  try {
+    artifact = JSON.parse(source) as VerifierDeployment;
+  } catch {
+    throw new BiniusBackendError('backend returned an invalid verifier deployment JSON artifact');
+  }
+  const code = (value: unknown) => typeof value === 'string' && /^0x(?:[0-9a-f]{2})+$/.test(value);
+  const solidity = artifact?.compilerSettings?.solidity;
+  const yul = artifact?.compilerSettings?.yul;
+  if (
+    artifact?.contractName !== 'BiniusVerifier' ||
+    !code(artifact.bytecode) || !code(artifact.deployedBytecode) ||
+    artifact.initcodeBytes !== (artifact.bytecode.length - 2) / 2 ||
+    artifact.runtimeBytes !== (artifact.deployedBytecode.length - 2) / 2 ||
+    artifact.initcodeBytes > 49_152 || artifact.runtimeBytes > 24_576 ||
+    !Number.isSafeInteger(artifact.solidityInitcodeBytes) || artifact.solidityInitcodeBytes < 1 ||
+    typeof artifact.soliditySource !== 'string' || artifact.soliditySource.length === 0 ||
+    typeof artifact.yulSource !== 'string' || artifact.yulSource.length === 0 ||
+    artifact.compilerSettings?.version !== '0.8.35' ||
+    solidity?.optimizer?.enabled !== true || solidity.optimizer.runs !== 200 ||
+    solidity.viaIR !== true || solidity.evmVersion !== 'osaka' || solidity.metadata?.bytecodeHash !== 'none' ||
+    yul?.optimizer?.enabled !== true || yul.optimizer.runs !== 200 || yul.evmVersion !== 'osaka' ||
+    !Array.isArray(artifact.abi) || artifact.abi.length !== 2 ||
+    artifact.abi[0]?.type !== 'constructor' || artifact.abi[0].stateMutability !== 'nonpayable' ||
+    !Array.isArray(artifact.abi[0].inputs) || artifact.abi[0].inputs.length !== 0 ||
+    artifact.abi[1]?.type !== 'function' || artifact.abi[1].name !== 'verify' ||
+    artifact.abi[1].stateMutability !== 'view' || !Array.isArray(artifact.abi[1].inputs) ||
+    artifact.abi[1].inputs.length !== 2 ||
+    artifact.abi[1].inputs[0]?.type !== 'bytes' || artifact.abi[1].inputs[0].internalType !== 'bytes' ||
+    artifact.abi[1].inputs[0].name !== 'proof' || artifact.abi[1].inputs[1]?.type !== 'bytes32[]' ||
+    artifact.abi[1].inputs[1].internalType !== 'bytes32[]' || artifact.abi[1].inputs[1].name !== 'publicInputs' ||
+    !Array.isArray(artifact.abi[1].outputs) || artifact.abi[1].outputs.length !== 1 ||
+    artifact.abi[1].outputs[0]?.type !== 'bool' || artifact.abi[1].outputs[0].internalType !== 'bool' ||
+    artifact.abi[1].outputs[0].name !== ''
+  ) {
+    throw new BiniusBackendError('backend returned an inconsistent direct verifier deployment artifact');
+  }
+  if (artifact.construction?.programInput !== undefined) verifierProgramBytes(artifact);
+  return artifact;
+}
+
+function verifierProgramBytes(deployment: VerifierDeployment): Uint8Array {
+  const construction = deployment.construction;
+  const info = construction?.programInput;
+  if (!info) throw new BiniusBackendError('deployment does not support authenticated program input');
+  const storage = construction?.storageCompression;
+  const program = storage?.storedProgram ?? construction?.verificationProgram;
+  const digest = storage?.storedProgramKeccak256 ?? construction?.programKeccak256;
+  if (
+    info.kind !== 'keccak-calldata-v1' || info.magic !== '0x4e42494e4b303031' ||
+    !Number.isSafeInteger(info.programLength) || info.programLength < 1 ||
+    typeof program !== 'string' || !/^0x(?:[0-9a-f]{2})+$/.test(program) ||
+    (program.length - 2) / 2 !== info.programLength ||
+    !/^0x[0-9a-f]{64}$/.test(info.programKeccak256) || info.programKeccak256 !== digest
+  ) throw new BiniusBackendError('inconsistent authenticated program metadata');
+  return Uint8Array.from(Buffer.from(program.slice(2), 'hex'));
+}
+
+/** Frame a native or SHA-hinted zk Binius proof with optional public circuit data.
+ * This prepares the proof argument; it does not verify a proof or trust the data.
+ * The contract authenticates every program byte and performs native verification.
+ * Raw proofs still work, and deployments without this capability reject the helper. */
+export function withVerifierProgram(proof: Uint8Array, deployment: VerifierDeployment): Uint8Array {
+  const program = verifierProgramBytes(deployment);
+  const starts = (prefix: string) => proof.length >= prefix.length &&
+    [...prefix].every((character, i) => proof[i] === character.charCodeAt(0));
+  if (!(proof instanceof Uint8Array) || !(starts('NBINZK01') || starts('NBINH001NBINZK01'))) {
+    throw new BiniusBackendError('expected native NBINZK01 proof or NBINH001 hash hints');
+  }
+  const framed = new Uint8Array(8 + program.length + proof.length);
+  framed.set(new TextEncoder().encode('NBINK001'));
+  framed.set(program, 8);
+  framed.set(proof, 8 + program.length);
+  return framed;
 }
 
 function validateSolidityVerifierTarget(

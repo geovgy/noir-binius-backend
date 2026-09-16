@@ -12,3 +12,7 @@ via_ir = true
 gas_limit = 1000000000000
 memory_limit = 1073741824
 fs_permissions = [{ access = "read", path = "../target" }]
+
+# Omit the metadata content hash to fit the single-contract initcode limit.
+# Solidity version metadata is retained; all proof/key binding is explicit.
+bytecode_hash = "none"

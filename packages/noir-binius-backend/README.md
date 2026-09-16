@@ -42,6 +42,10 @@ supported. The direct Binius64 target is the default; select the succinct SP1 wr
 
 ```ts
 const directSource = await backend.generateSolidityVerifier();
+// Optional: faster fixed-matrix evaluation, with higher deployment gas.
+const factoredSource = await backend.generateSolidityVerifier({
+  solidityCompiler: '/path/to/solc-0.8.35',
+});
 const wrappedSource = await backend.generateSolidityVerifier({
   verifierTarget: 'evm-sp1',
 });
@@ -59,6 +63,62 @@ constructor arguments and makes no external calls. Its constructor decodes and s
 circuit program, so `verify` works immediately after deployment. There is no
 program-upload API. Deployment and verification require large gas budgets; see the repository
 [deployment instructions and measured costs](../../README.md#solidity-verifiers).
+The optional `solidityCompiler` path selects factored wiring and compressed
+runtime deployment for the direct target. Generation compiles the complete
+verification implementation and checks that the constructor returns those exact
+runtime bytes. Compile the emitted source with solc 0.8.35, optimizer 200 runs,
+`viaIR`, Osaka, and `metadata.bytecodeHash: "none"`. This option changes the fixed
+program representation and deployment cost; it accepts the same proof bytes.
+
+`generateVerifierDeployment` returns an explicit artifact with compact creation
+code; `getVerifierDeployment(key, options)` does the same from an existing key:
+
+```ts
+const deployment = await backend.generateVerifierDeployment({
+  solidityCompiler: '/path/to/solc-0.8.35',
+  logInvRate: 3,
+});
+// Pass deployment.abi and deployment.bytecode to your deployment library,
+// with no constructor arguments. The contract exposes verify immediately.
+```
+
+Use the same `logInvRate` when generating the proof and the verification key.
+
+The artifact includes `soliditySource`, `yulSource`, `deployedBytecode`, compiler
+settings and code sizes. The Yul constructor copies the same compressed circuit
+data from a code section and, where beneficial, derives the complete fixed matrix
+before storing it. It can also apply a fixed literal-copy plan to reduce storage
+reads during verification, and expand the public graph's child references during
+construction to avoid decoding them on each call. Consecutive nodes share a
+coordinate header while retaining every original child reference. The optional
+`construction` metadata records the logical program, storage encoding and hashes
+for review. Deployment takes no metadata arguments.
+Use its `bytecode`: ordinary compilation of `soliditySource` can produce oversized
+creation code. The deployed runtime is the complete Solidity `IVerifier`
+implementation. It accepts the original proof and recomputes all optional SHA
+hints; it needs no other verifier or post-deployment upload. The existing
+`generateSolidityVerifier` and `getSolidityVerifier` methods still return Solidity
+source. See [deployment validation and gas](../../docs/direct-solidity-verification.md#compact-yul-deployment).
+
+When `deployment.construction?.programInput` is present, the same contract also
+accepts public circuit data alongside the proof to avoid cold storage reads:
+
+```ts
+import { withVerifierProgram } from '@noir-binius/backend';
+
+const proofArgument = deployment.construction?.programInput
+  ? withVerifierProgram(proofData.proof, deployment)
+  : proofData.proof;
+// Call verify(proofArgument, proofData.publicInputs) on the deployed contract.
+```
+
+This adds an `NBINK001` frame around the public program and the original native
+zk proof (or a proof with checked SHA hints). The constructor fixes the program's
+Keccak digest; `verify` authenticates every supplied byte before executing the
+same Binius verifier. The helper only frames input and does not verify a proof.
+Raw proofs remain accepted. The generator advertises this option only when the
+complete compiled artifact fits both EVM code limits.
+
 `verifierTarget: 'evm-sp1'` accepts the `NBINSP11` wrapper created by the repository's
 `sp1/prover` binary and delegates succinct verification to an SP1 verifier gateway. Both generated
 contracts expose `verify(bytes, bytes32[])` and bind the ordered `ProofData.publicInputs`.

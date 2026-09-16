@@ -127,6 +127,51 @@ enum Command {
         /// Accepted for compatibility; generated contracts use their optimized implementation.
         #[arg(long)]
         optimized: bool,
+        /// Use solc 0.8.35 to generate factored wiring and compress the complete
+        /// runtime for one deployment. Trades higher deployment gas for lower
+        /// verification gas; emitted source requires the documented settings.
+        #[arg(
+            long = "solidity_compiler",
+            alias = "solidity-compiler",
+            alias = "solc"
+        )]
+        solidity_compiler: Option<PathBuf>,
+    },
+    /// Write a direct verifier deployment artifact with Solidity ABI/source
+    /// and compact Yul creation code. Deploy its bytecode with no arguments.
+    #[command(
+        name = "write_verifier_deployment",
+        visible_alias = "write-verifier-deployment"
+    )]
+    WriteVerifierDeployment {
+        #[arg(short = 'k', long = "vk_path", alias = "vk-path")]
+        verification_key: PathBuf,
+        /// JSON artifact containing ABI, bytecode and both source forms.
+        #[arg(short = 'o', long = "output_path", alias = "output-path")]
+        output: PathBuf,
+        /// Path to the solc 0.8.35 executable used during generation.
+        #[arg(
+            long = "solidity_compiler",
+            alias = "solidity-compiler",
+            alias = "solc"
+        )]
+        solidity_compiler: PathBuf,
+    },
+    /// Add optional, contract-checked SHA hints to a native proof for direct Solidity verification.
+    #[command(name = "write_solidity_proof", visible_alias = "write-solidity-proof")]
+    WriteSolidityProof {
+        /// Portable verification key created by `write-vk`.
+        #[arg(short = 'k', long = "vk_path", alias = "vk-path")]
+        verification_key: PathBuf,
+        /// Original NBINZK01 proof created by `prove`.
+        #[arg(short = 'p', long)]
+        proof: PathBuf,
+        /// Output proof with checked hash hints for the generated contract.
+        #[arg(short = 'o', long = "output_path", alias = "output-path")]
+        output: PathBuf,
+        /// Optionally include the generated artifact's authenticated public circuit data.
+        #[arg(long = "deployment_path", alias = "deployment-path")]
+        deployment: Option<PathBuf>,
     },
     /// Encode a proof and verification key for Noir's recursive-aggregation API.
     RecursiveInputs {
@@ -225,6 +270,7 @@ fn main() -> Result<()> {
             output,
             verifier_target,
             optimized: _,
+            solidity_compiler,
         } => {
             let key = fs::read(&verification_key).with_context(|| {
                 format!(
@@ -232,7 +278,15 @@ fn main() -> Result<()> {
                     verification_key.display()
                 )
             })?;
-            let source = noir_binius::solidity::generate_verifier(&key, verifier_target.as_str())?;
+            let source = if let Some(compiler) = solidity_compiler {
+                noir_binius::solidity::generate_verifier_with_compiler(
+                    &key,
+                    verifier_target.as_str(),
+                    &compiler,
+                )?
+            } else {
+                noir_binius::solidity::generate_verifier(&key, verifier_target.as_str())?
+            };
             if let Some(parent) = output.parent()
                 && !parent.as_os_str().is_empty()
             {
@@ -243,6 +297,68 @@ fn main() -> Result<()> {
             fs::write(&output, source)
                 .with_context(|| format!("failed to write {}", output.display()))?;
             println!("Solidity verifier written to {}", output.display());
+        }
+        Command::WriteVerifierDeployment {
+            verification_key,
+            output,
+            solidity_compiler,
+        } => {
+            let key = fs::read(&verification_key)
+                .with_context(|| format!("failed to read {}", verification_key.display()))?;
+            let artifact =
+                noir_binius::solidity::generate_verifier_deployment(&key, &solidity_compiler)?;
+            if let Some(parent) = output.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create {}", parent.display()))?;
+            }
+            let json = serde_json::to_vec_pretty(&artifact)?;
+            fs::write(&output, json)
+                .with_context(|| format!("failed to write {}", output.display()))?;
+            println!(
+                "Verifier deployment written to {} ({} initcode bytes, {} runtime bytes; no constructor arguments)",
+                output.display(),
+                artifact.initcode_bytes,
+                artifact.runtime_bytes
+            );
+        }
+        Command::WriteSolidityProof {
+            verification_key,
+            proof,
+            output,
+            deployment,
+        } => {
+            let key = fs::read(&verification_key)
+                .with_context(|| format!("failed to read {}", verification_key.display()))?;
+            let native =
+                fs::read(&proof).with_context(|| format!("failed to read {}", proof.display()))?;
+            let prepared = noir_binius::solidity::prepare_solidity_proof(&key, &native)?;
+            let hint_bytes = prepared.len() - native.len() - 8;
+            let prepared = if let Some(path) = deployment {
+                let artifact: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&path).with_context(|| {
+                        format!("failed to read deployment {}", path.display())
+                    })?)?;
+                noir_binius::solidity::with_verifier_program(&artifact, &prepared)?
+            } else {
+                prepared
+            };
+            if let Some(parent) = output.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create {}", parent.display()))?;
+            }
+            fs::write(&output, &prepared)
+                .with_context(|| format!("failed to write {}", output.display()))?;
+            println!(
+                "Solidity proof written to {} ({} total bytes; {} native bytes; {} SHA hint bytes)",
+                output.display(),
+                prepared.len(),
+                native.len(),
+                hint_bytes
+            );
         }
         Command::RecursiveInputs {
             artifact,
@@ -319,6 +435,45 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn deployment_command_requires_compiler_and_accepts_path_aliases() {
+        for name in ["write_verifier_deployment", "write-verifier-deployment"] {
+            let cli = Cli::try_parse_from([
+                "noir-binius",
+                name,
+                "--vk-path",
+                "key",
+                "--output-path",
+                "deployment.json",
+                "--solc",
+                "/local tools/solc 0.8.35",
+            ])
+            .unwrap();
+            let Command::WriteVerifierDeployment {
+                verification_key,
+                output,
+                solidity_compiler,
+            } = cli.command
+            else {
+                panic!("wrong command");
+            };
+            assert_eq!(verification_key.to_str(), Some("key"));
+            assert_eq!(output.to_str(), Some("deployment.json"));
+            assert_eq!(solidity_compiler.to_str(), Some("/local tools/solc 0.8.35"));
+        }
+        assert!(
+            Cli::try_parse_from([
+                "noir-binius",
+                "write_verifier_deployment",
+                "-k",
+                "key",
+                "-o",
+                "deployment.json",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
