@@ -2,7 +2,8 @@
 //!
 //! Solidity emits a long bytes literal as individual MSTORE instructions.
 //! Replace only those checked stores with a Yul data section and DATACOPY.
-//! The installed program and compiler-produced verification runtime are unchanged.
+//! The installed program is unchanged. An explicitly advertised Yul runtime
+//! stage can replace a checked arithmetic span after the Solidity lowering.
 
 use super::deployment::{check_size, decode_hex, standard_json};
 use anyhow::{Context, Result, ensure};
@@ -13,7 +14,8 @@ use std::{ops::Range, path::Path};
 
 /// A single-deployment verifier, generated from a verification key alone.
 /// Deploy `bytecode` with `abi` and no constructor arguments. The Solidity
-/// source binds the runtime; its ordinary creation code can exceed EVM limits.
+/// body is the semantic reference. `runtime_compilation` selects the runtime
+/// compiler input; ordinary Solidity creation code can exceed EVM limits.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VerifierDeployment {
@@ -27,6 +29,8 @@ pub struct VerifierDeployment {
     pub initcode_bytes: usize,
     pub runtime_bytes: usize,
     pub solidity_initcode_bytes: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_compilation: Option<super::sha_stack::RuntimeCompilation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub construction: Option<super::construction::ConstructionInfo>,
 }
@@ -61,23 +65,10 @@ pub(super) fn compile_with_compressor(
         construction,
         compress,
     )?;
-    let settings = json!({
-        "optimizer": {"enabled": true, "runs": 200}, "viaIR": true,
-        "evmVersion": "osaka", "metadata": {"bytecodeHash": "none"}
-    });
-    let mut requested = settings.clone();
-    requested["outputSelection"] = json!({"*": {"BiniusVerifier": [
-        "abi", "irOptimized", "evm.bytecode.object",
-        "evm.deployedBytecode.object", "evm.deployedBytecode.sourceMap"
-    ]}});
-    let result = standard_json(
-        &json!({
-            "language": "Solidity", "sources": {"BiniusVerifier.sol": {"content": prepared.source}},
-            "settings": requested
-        }),
-        compiler,
-    )?;
-    let contract = &result["contracts"]["BiniusVerifier.sol"]["BiniusVerifier"];
+    let lowered = lower_solidity_creation(&prepared.source, &prepared.payload, compiler)?;
+    let contract = lowered.contract;
+    let settings = lowered.settings;
+    let yul = lowered.yul;
     let runtime = decode_hex(
         contract["evm"]["deployedBytecode"]["object"]
             .as_str()
@@ -87,30 +78,6 @@ pub(super) fn compile_with_compressor(
         runtime == prepared.runtime,
         "IR compilation changed the verifier runtime"
     );
-    check_runtime(
-        &runtime,
-        &contract["evm"]["deployedBytecode"]["sourceMap"],
-        &contract["abi"],
-    )?;
-    let ir = contract["irOptimized"]
-        .as_str()
-        .context("missing optimized constructor IR")?;
-    // Exporting the AST requires solc's experimental switch, which also changes
-    // runtime CBOR metadata. Use that compilation only for the constructor AST.
-    // Its entire printed constructor must match the ordinary IR byte for byte;
-    // its runtime and creation bytecode are never used in the artifact.
-    let mut ast_settings = settings.clone();
-    ast_settings["experimental"] = json!(true);
-    ast_settings["outputSelection"] =
-        json!({"*": {"BiniusVerifier": ["irOptimized", "irOptimizedAst"]}});
-    let ast_result = standard_json(
-        &json!({"language": "Solidity", "sources": {"BiniusVerifier.sol": {"content": prepared.source}},
-            "settings": ast_settings}),
-        compiler,
-    )?;
-    let ast_contract = &ast_result["contracts"]["BiniusVerifier.sol"]["BiniusVerifier"];
-    let ast = checked_constructor_ast(ir, ast_contract)?;
-    let yul = relocate_literal(ir, ast, &prepared.payload)?;
     let result = standard_json(
         &json!({
             "language": "Yul", "sources": {"BiniusVerifier.yul": {"content": yul}},
@@ -145,6 +112,7 @@ pub(super) fn compile_with_compressor(
         initcode_bytes: creation.len(),
         runtime_bytes: runtime.len(),
         solidity_initcode_bytes: prepared.creation_bytes,
+        runtime_compilation: None,
         construction: construction.map(super::construction::metadata),
     };
     Ok(Compiled {
@@ -154,7 +122,114 @@ pub(super) fn compile_with_compressor(
     })
 }
 
-fn check_runtime(code: &[u8], source_map: &Value, abi: &Value) -> Result<()> {
+pub(super) struct LoweredSolidity {
+    pub contract: Value,
+    pub settings: Value,
+    pub yul: String,
+}
+
+/// Obtain the complete ordinary IR and relocate only its exact constructor
+/// literal. The experimental AST is never the runtime compiler reference.
+pub(super) fn lower_solidity_creation(
+    source: &str,
+    payload: &[u8],
+    compiler: &Path,
+) -> Result<LoweredSolidity> {
+    let settings = json!({
+        "optimizer": {"enabled": true, "runs": 200}, "viaIR": true,
+        "evmVersion": "osaka", "metadata": {"bytecodeHash": "none"}
+    });
+    let mut requested = settings.clone();
+    requested["outputSelection"] = json!({"*": {"BiniusVerifier": [
+        "abi", "irOptimized", "evm.bytecode.object",
+        "evm.deployedBytecode.object", "evm.deployedBytecode.sourceMap"
+    ]}});
+    let result = standard_json(
+        &json!({
+            "language": "Solidity", "sources": {"BiniusVerifier.sol": {"content": source}},
+            "settings": requested
+        }),
+        compiler,
+    )?;
+    let contract = result["contracts"]["BiniusVerifier.sol"]["BiniusVerifier"].clone();
+    let runtime = decode_hex(
+        contract["evm"]["deployedBytecode"]["object"]
+            .as_str()
+            .context("missing runtime")?,
+    )?;
+    check_runtime(
+        &runtime,
+        &contract["evm"]["deployedBytecode"]["sourceMap"],
+        &contract["abi"],
+    )?;
+    let ir = contract["irOptimized"]
+        .as_str()
+        .context("missing optimized constructor IR")?;
+    // Exporting the AST requires solc's experimental switch, which also changes
+    // runtime CBOR metadata. Use that compilation only for the constructor AST.
+    // Its entire printed constructor must match the ordinary IR byte for byte;
+    // its runtime and creation bytecode are never used in the artifact.
+    let mut ast_settings = settings.clone();
+    ast_settings["experimental"] = json!(true);
+    ast_settings["outputSelection"] =
+        json!({"*": {"BiniusVerifier": ["irOptimized", "irOptimizedAst"]}});
+    let ast_result = standard_json(
+        &json!({"language": "Solidity", "sources": {"BiniusVerifier.sol": {"content": source}},
+            "settings": ast_settings}),
+        compiler,
+    )?;
+    let ast_contract = &ast_result["contracts"]["BiniusVerifier.sol"]["BiniusVerifier"];
+    let ast = checked_constructor_ast(ir, ast_contract)?;
+    let yul = relocate_literal(ir, ast, payload)?;
+    Ok(LoweredSolidity {
+        contract,
+        settings,
+        yul,
+    })
+}
+
+/// Keep the complete object context: compiling only the nested runtime changes
+/// optimizer decisions and is not the emitted deployment's compilation unit.
+pub(super) fn compile_yul(source: &str, compiler: &Path) -> Result<Value> {
+    let result = standard_json(
+        &json!({
+            "language": "Yul", "sources": {"BiniusVerifier.yul": {"content": source}},
+            "settings": {"optimizer": {"enabled": true, "runs": 200}, "evmVersion": "osaka",
+                "outputSelection": {"*": {"*": ["evm.bytecode.object",
+                    "evm.deployedBytecode.object", "evm.deployedBytecode.sourceMap"]}}}
+        }),
+        compiler,
+    )?;
+    let contracts = result["contracts"]["BiniusVerifier.yul"]
+        .as_object()
+        .context("missing compiled Yul object")?;
+    ensure!(
+        contracts.len() == 1,
+        "expected exactly one Yul creation object"
+    );
+    Ok(contracts.values().next().unwrap()["evm"].clone())
+}
+
+pub(super) fn check_runtime(code: &[u8], source_map: &Value, abi: &Value) -> Result<()> {
+    check_runtime_with_block(code, source_map, abi, None)
+}
+
+pub(super) fn check_runtime_with_block(
+    code: &[u8],
+    source_map: &Value,
+    abi: &Value,
+    block: Option<&[u8]>,
+) -> Result<()> {
+    check_runtime_with_blocks(code, source_map, abi, block, None)
+}
+
+pub(super) fn check_runtime_with_blocks(
+    code: &[u8],
+    source_map: &Value,
+    abi: &Value,
+    block: Option<&[u8]>,
+    word_block: Option<&[u8]>,
+) -> Result<()> {
     let abi = abi.as_array().context("missing Solidity ABI")?;
     let constructors: Vec<_> = abi.iter().filter(|x| x["type"] == "constructor").collect();
     ensure!(
@@ -198,12 +273,47 @@ fn check_runtime(code: &[u8], source_map: &Value, abi: &Value) -> Result<()> {
         .as_str()
         .filter(|s| !s.is_empty())
         .context("missing executable source map")?;
+    ensure!(
+        word_block.is_none() || block.is_some(),
+        "SHA word block requires round block"
+    );
+    let mut blocks = Vec::new();
+    for (is_word, block) in [(false, block), (true, word_block)] {
+        let Some(block) = block else { continue };
+        if is_word {
+            super::sha_stack::validate_word_block(block)?
+        } else {
+            super::sha_stack::validate_block(block)?
+        }
+        let starts: Vec<_> = code
+            .windows(block.len())
+            .enumerate()
+            .filter_map(|(i, bytes)| (bytes == block).then_some(i))
+            .collect();
+        ensure!(
+            starts.len() == 1,
+            "expected one exact SHA stack block in runtime"
+        );
+        blocks.push((starts[0], block.len()));
+    }
+    let mut seen_blocks = 0;
     let mut offset = 0;
     for _ in source_map.split(';') {
         ensure!(
             offset < metadata,
             "runtime source map exceeds executable code"
         );
+        // One verbatim block consumes ONE source-map item. Its complete bytes
+        // are independently checked, including its internal branch and stack.
+        if let Some((_, length)) = blocks.iter().find(|(start, _)| *start == offset) {
+            offset += length;
+            ensure!(
+                offset <= metadata,
+                "SHA stack block overlaps runtime metadata"
+            );
+            seen_blocks += 1;
+            continue;
+        }
         let op = code[offset];
         ensure!(
             !matches!(
@@ -218,6 +328,10 @@ fn check_runtime(code: &[u8], source_map: &Value, abi: &Value) -> Result<()> {
             0
         };
     }
+    ensure!(
+        seen_blocks == blocks.len(),
+        "source map did not visit every SHA stack block"
+    );
     ensure!(offset <= metadata, "instruction overlaps runtime metadata");
     if offset < metadata {
         ensure!(

@@ -93,12 +93,49 @@ construction to avoid decoding them on each call. Consecutive nodes share a
 coordinate header while retaining every original child reference. The optional
 `construction` metadata records the logical program, storage encoding and hashes
 for review. Deployment takes no metadata arguments.
+When `runtimeCompilation.kind` is `yul-sha-rounds-v1` through
+`yul-sha-rounds-v11`, independently compile the
+complete `yulSource` as `BiniusVerifier.yul` to reproduce creation and runtime
+bytes. This mode schedules the same 64 SHA rounds directly on the EVM stack.
+Version 2 also schedules the unchanged message-expansion body and binds its exact
+opcodes with `wordBlockSha256`. Version 3 changes only the proved placement of
+round operands on the stack and pins that block's separate hash. Earlier versions
+remain supported.
+Version 4 advances an absolute cursor through the same 64 constant/schedule
+address pairs; its `roundBlockSha256` pins that block separately.
+Version 5 keeps the cursor block and binds a new word block that removes four
+stack swaps from the same message-address calculations.
+Version 6 binds four rounds per loop and `scalarCore: "packed"`. It shares the
+packed core with scalar calls, clearing their pending padding-cache request.
+The complete scalar and packed functions must match the checked equations under
+either compiler name ordering. Canonical lanes and masked feed-forward preserve
+the scalar low-lane digest; all 64 SHA rounds still execute.
+Version 7 retains intermediate stack layouts across four rounds and advances
+their shared cursor by 128, preserving every constant and schedule address.
+Version 8 additionally binds the complete message-expansion loop: a Boolean
+cache hit skips it, and a miss computes all 48 original expansion words.
+Its `wordBlockSha256` pins the loop and unchanged word equation together.
+Version 9 pairs a smaller, equivalent round block with two expansion words per
+loop. It retains all 48 message-expansion steps and all 64 rounds, binding both
+opcode blocks by their distinct hashes. The complete callee/source binding and
+`scalarCore: "packed"` requirement remain.
+Version 10 retains masks and a base cursor across four expansion words. Its
+separate word-block hash binds all four original equations and their rebased
+addresses, twelve loop iterations, the cache skip and complete stack cleanup.
+The complete Solidity body remains the semantic reference, whose ordinary runtime
+hash is recorded separately. Without this optional field the runtime is the
+ordinary Solidity compiler output. `solidityInitcodeBytes` records the ordinary
+Solidity creation size in both modes.
 Use its `bytecode`: ordinary compilation of `soliditySource` can produce oversized
 creation code. The deployed runtime is the complete Solidity `IVerifier`
 implementation. It accepts the original proof and recomputes all optional SHA
 hints; it needs no other verifier or post-deployment upload. The existing
 `generateSolidityVerifier` and `getSolidityVerifier` methods still return Solidity
 source. See [deployment validation and gas](../../docs/direct-solidity-verification.md#compact-yul-deployment).
+Version 11 retains all six round masks and the two preceding schedule words.
+Its word loop still performs all 48 ordered stores, using a checked stack
+invariant in place of repeated W[i-2] reads. The new round/word hashes and
+`scalarCore: "packed"` are required together; older bindings remain distinct.
 
 When `deployment.construction?.programInput` is present, the same contract also
 accepts public circuit data alongside the proof to avoid cold storage reads:

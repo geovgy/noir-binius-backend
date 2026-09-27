@@ -16,6 +16,13 @@ import shutil
 import subprocess
 
 
+def gas_measurement(log, label):
+    """Read one complete label, independent of parallel test output order."""
+    matches = re.findall(r'^[ \t]*' + re.escape(label) + r': ([0-9]+)[ \t]*$', log, re.MULTILINE)
+    assert len(matches) == 1, f'expected one gas measurement for {label!r}, found {len(matches)}'
+    return int(matches[0])
+
+
 def expand_operands(encoded, width, byte_ranges=None):
     """Independent decoder for the fixed program's delta operand stream."""
     assert width in (1, 2, 4)
@@ -439,7 +446,7 @@ def main():
         (dest / name).write_bytes(value)
     (dest / 'BiniusVerifier.sol').write_text(source)
     (dest / 'BiniusVerifier.yul').write_text(artifact['yulSource'])
-    # Recompile the exact emitted source in the artifact's compilation unit.
+    # Recompile the exact reference Solidity and the advertised runtime unit.
     # Unrelated test contracts can change solc's optimized runtime layout; their
     # type(...).runtimeCode is not this artifact's compiler output. Do not trust
     # the runtime stored in the artifact as the independent compiler reference.
@@ -451,7 +458,7 @@ def main():
     compiler_input = {
         'language': 'Solidity', 'sources': {'BiniusVerifier.sol': {'content': source}},
         'settings': solidity_settings | {'outputSelection': {'*': {'BiniusVerifier': [
-            'abi', 'evm.bytecode.object', 'evm.deployedBytecode.object', 'evm.deployedBytecode.sourceMap',
+            'abi', 'irOptimized', 'evm.bytecode.object', 'evm.deployedBytecode.object', 'evm.deployedBytecode.sourceMap',
         ]}}},
     }
     (dest / 'BiniusVerifier.compiler-input.json').write_text(json.dumps(compiler_input) + '\n')
@@ -462,11 +469,52 @@ def main():
     contract = result['contracts']['BiniusVerifier.sol']['BiniusVerifier']
     compiled = {'abi': contract['abi'], **contract['evm']}
     compiler_runtime = bytes.fromhex(compiled['deployedBytecode']['object'])
-    assert compiler_runtime == runtime, 'emitted source compiles to a different artifact runtime'
+    binding = artifact.get('runtimeCompilation')
+    if binding is None:
+        assert compiler_runtime == runtime, 'emitted Solidity compiles to a different artifact runtime'
+    else:
+        from sha_stack_check import BLOCK_HASH, PLACEMENT_HASH, CURSOR_HASH, FOUR_HASH, GROUP_HASH, SIGMA_HASH, RETAINED_HASH, load_block, validate_runtime, validate_source
+        assert binding['kind'] in ('yul-sha-rounds-v1', 'yul-sha-rounds-v2', 'yul-sha-rounds-v3', 'yul-sha-rounds-v4', 'yul-sha-rounds-v5', 'yul-sha-rounds-v6', 'yul-sha-rounds-v7', 'yul-sha-rounds-v8', 'yul-sha-rounds-v9', 'yul-sha-rounds-v10', 'yul-sha-rounds-v11')
+        placement = binding['kind'] == 'yul-sha-rounds-v3'
+        cursor = binding['kind'] in ('yul-sha-rounds-v4', 'yul-sha-rounds-v5')
+        four = binding['kind'] == 'yul-sha-rounds-v6'
+        group = binding['kind'] in ('yul-sha-rounds-v7', 'yul-sha-rounds-v8')
+        retained = binding['kind'] == 'yul-sha-rounds-v11'
+        sigma = binding['kind'] in ('yul-sha-rounds-v9', 'yul-sha-rounds-v10')
+        assert binding.get('scalarCore') == ('packed' if four or group or sigma or retained else None)
+        if not (four or group or sigma or retained):
+            assert 'scalarCore' not in binding
+        assert binding['runtimeSource'] == 'BiniusVerifier.yul'
+        assert binding['roundBlockSha256'] == '0x' + (RETAINED_HASH if retained else SIGMA_HASH if sigma else GROUP_HASH if group else FOUR_HASH if four else CURSOR_HASH if cursor else PLACEMENT_HASH if placement else BLOCK_HASH)
+        assert binding['solidityReferenceRuntimeSha256'] == '0x' + hashlib.sha256(compiler_runtime).hexdigest()
+        block = load_block(placement, cursor, four, group, sigma, retained)
+        word_block = None
+        if retained:
+            from sha_pair_stack_check import WORD_HASH, load_word
+            assert binding['wordBlockSha256'] == '0x' + WORD_HASH
+            word_block = load_word()
+        elif binding['kind'] == 'yul-sha-rounds-v10':
+            from sha_word_group_check import BLOCK_HASH as WORD_GROUP_HASH, load_block as load_word_group
+            assert binding['wordBlockSha256'] == '0x' + WORD_GROUP_HASH
+            word_block = load_word_group()
+        elif binding['kind'] in ('yul-sha-rounds-v8', 'yul-sha-rounds-v9'):
+            from sha_word_loop_check import LOOP_HASH, DOUBLE_HASH, load_block as load_loop
+            assert binding['wordBlockSha256'] == '0x' + (DOUBLE_HASH if sigma else LOOP_HASH)
+            word_block = load_loop(sigma)
+        elif binding['kind'] != 'yul-sha-rounds-v1':
+            from sha_word_stack_check import BLOCK_HASH as WORD_HASH, ORDER_HASH, load_block as load_word_block
+            order = binding['kind'] in ('yul-sha-rounds-v5', 'yul-sha-rounds-v6', 'yul-sha-rounds-v7')
+            assert binding['wordBlockSha256'] == '0x' + (ORDER_HASH if order else WORD_HASH)
+            word_block = load_word_block(order)
+        else:
+            assert 'wordBlockSha256' not in binding
+        validate_source(contract['irOptimized'], artifact['yulSource'], word_block, block, binding.get('scalarCore'))
     assert compiled['abi'] == artifact['abi']
     assert len(bytes.fromhex(compiled['bytecode']['object'])) == artifact['solidityInitcodeBytes']
     (dest / 'BiniusVerifier.compiled.json').write_text(json.dumps(compiled) + '\n')
-    settings = artifact['compilerSettings']['yul'] | {'outputSelection': {'*': {'*': ['evm.bytecode.object']}}}
+    settings = artifact['compilerSettings']['yul'] | {'outputSelection': {'*': {'*': [
+        'evm.bytecode.object', 'evm.deployedBytecode.object', 'evm.deployedBytecode.sourceMap',
+    ]}}}
     result = subprocess.run([solc, '--standard-json'], text=True, capture_output=True, check=True,
                             input=json.dumps({'language': 'Yul', 'settings': settings,
                                               'sources': {'BiniusVerifier.yul': {'content': artifact['yulSource']}}}))
@@ -474,7 +522,14 @@ def main():
     assert not [error for error in result.get('errors', []) if error['severity'] == 'error'], result
     contracts = result['contracts']['BiniusVerifier.yul']
     assert len(contracts) == 1
-    assert bytes.fromhex(next(iter(contracts.values()))['evm']['bytecode']['object']) == creation
+    yul_compiled = next(iter(contracts.values()))['evm']
+    assert bytes.fromhex(yul_compiled['bytecode']['object']) == creation
+    if binding is not None:
+        compiler_runtime = bytes.fromhex(yul_compiled['deployedBytecode']['object'])
+        assert compiler_runtime == runtime, 'emitted Yul compiles to a different artifact runtime'
+        audit = validate_runtime(runtime, yul_compiled['deployedBytecode']['sourceMap'], block, word_block)
+        (dest / 'runtime-audit.json').write_text(json.dumps(audit, indent=2) + '\n')
+    (dest / 'BiniusVerifier.yul-compiled.json').write_text(json.dumps(yul_compiled) + '\n')
 
     root = dest / 'evm'
     for directory in ('solidity/src', 'solidity/test', 'solidity/artifact-test', 'target'):
@@ -527,17 +582,20 @@ def main():
         'ordinary_solidity_initcode_bytes': artifact['solidityInitcodeBytes'],
         'program_bytes_checked': len(stored), 'uncompressed_program_bytes': len(program), 'evm_tests': tests,
         'native_verified': True, 'constructor_arguments': 0,
-        'solidity_and_deployed_runtime_identical': True,
-        'independent_compiler_unit': 'BiniusVerifier.sol',
+        'independent_compiler_unit': 'BiniusVerifier.yul' if binding is not None else 'BiniusVerifier.sol',
         'yul_source_and_creation_bytecode_identical': True,
     }
-    for name, label in [('raw_call_gas', r'verification gas \(cold program storage\)'),
+    measurement['yul_and_deployed_runtime_identical' if binding is not None
+                else 'solidity_and_deployed_runtime_identical'] = True
+    if binding is not None:
+        measurement['runtime_compilation'] = binding
+    for name, label in [('raw_call_gas', 'verification gas (cold program storage)'),
                         ('hinted_call_gas', 'hinted verification gas'),
                         ('creation_gas', 'creation gas excluding bytecode file read')]:
-        measurement[name] = int(re.search(label + r': (\d+)', log)[1])
+        measurement[name] = gas_measurement(log, label)
     if program_input:
         for kind in ('native', 'hinted'):
-            measurement[f'key_{kind}_call_gas'] = int(re.search(f'program input {kind} verification gas: (\\d+)', log)[1])
+            measurement[f'key_{kind}_call_gas'] = gas_measurement(log, f'program input {kind} verification gas')
         measurement['key_native_bytes'] = (dest / 'fixture.key-binius').stat().st_size
         measurement['key_hinted_bytes'] = (dest / 'fixture.key-hinted').stat().st_size
     for name, value in [('program', program), ('stored_program', stored), ('runtime', runtime), ('creation', creation)]:

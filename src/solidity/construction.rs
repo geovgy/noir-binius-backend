@@ -946,6 +946,108 @@ pub(super) fn cache_sha_padding(mut source: String) -> Result<String> {
     Ok(source)
 }
 
+/// Keep one compiled copy of the packed interpolation loop. Both halves retain
+/// the original cell addresses, backreferences, field products and write order.
+/// A 16-bit group length bounds the additional split depth to eight.
+pub(super) fn share_packed_interpolation(mut source: String) -> Result<String> {
+    ensure!(
+        !source.contains("function _interpolateChunk("),
+        "packed interpolation helper already exists"
+    );
+    let range = function_range(&source, "_factoredWiring")?;
+    let original = &source[range.clone()];
+    ensure!(
+        original
+            .matches("end := add(dest, and(shr(228, header), 0xffff0))")
+            .count()
+            == 1,
+        "shared interpolation requires bounded 16-byte groups"
+    );
+    let marker = "                } else {\n                    while (dest < end) {";
+    ensure!(
+        original.matches(marker).count() == 1,
+        "missing unique packed interpolation loop"
+    );
+    let opening = original.find(marker).unwrap() + marker.find('{').unwrap();
+    let mut depth = 0usize;
+    let end = original
+        .bytes()
+        .enumerate()
+        .skip(opening)
+        .find_map(|(at, byte)| {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => depth -= 1,
+                _ => {}
+            }
+            (depth == 0).then_some(at)
+        })
+        .context("unterminated packed interpolation block")?;
+    let body = &original[opening + 1..end];
+    for required in [
+        "uint256 value = a ^ _mul(r, a ^ b);",
+        "dest := add(dest, 16)",
+        "data := add(data, 4)",
+    ] {
+        ensure!(
+            body.matches(required).count() == 1,
+            "incompatible packed interpolation body: {required}"
+        );
+    }
+    let helper = format!(
+        r#"    function _interpolateChunk(uint256 data, uint256 dest, uint256 end, uint256 r)
+        private pure returns(uint256) {{
+        // Packed groups contain at most 65,535 cells of 16 bytes. Both halves
+        // retain their original addresses/order. The split depth is at most eight.
+        unchecked {{
+            if (end - dest > 4096) {{
+                uint256 middle = dest + (((end - dest) >> 5) << 4);
+                data = _interpolateChunk(data, dest, middle, r);
+                return _interpolateChunk(data, middle, end, r);
+            }}
+{body}
+            return data;
+        }}
+    }}"#
+    );
+    let replacement = format!(
+        "{}\n                    data = _interpolateChunk(data, dest, end, r);\n                    dest = end;\n                {}\n\n{}",
+        &original[..opening + 1],
+        &original[end..],
+        helper,
+    );
+    source.replace_range(range, &replacement);
+    Ok(source)
+}
+
+#[cfg(test)]
+mod shared_interpolation_tests {
+    use super::{PRODUCT_RUNTIME, pack_graph_values, share_packed_interpolation};
+
+    #[test]
+    fn sharing_rejects_incompatible_group_layouts() {
+        let packed = pack_graph_values(PRODUCT_RUNTIME.to_owned()).unwrap();
+        let shared = share_packed_interpolation(packed.clone()).unwrap();
+        assert!(share_packed_interpolation(shared).is_err());
+        assert!(share_packed_interpolation(PRODUCT_RUNTIME.to_owned()).is_err());
+        for (before, after) in [
+            ("dest := add(dest, 16)", "dest := add(dest, 32)"),
+            ("data := add(data, 4)", "data := add(data, 8)"),
+            (
+                "end := add(dest, and(shr(228, header), 0xffff0))",
+                "end := add(dest, and(shr(228, header), 0x1ffff0))",
+            ),
+            (
+                "uint256 value = a ^ _mul(r, a ^ b);",
+                "uint256 value = _mul(r, a ^ b);",
+            ),
+        ] {
+            assert!(packed.contains(before));
+            assert!(share_packed_interpolation(packed.replace(before, after)).is_err());
+        }
+    }
+}
+
 #[cfg(test)]
 mod fixed_sha_tests {
     use super::{cache_sha_padding, fixed_sha_arena, fixed_sha_entry_fits};

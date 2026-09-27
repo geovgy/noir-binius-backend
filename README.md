@@ -124,12 +124,12 @@ ordinary constructor compiled directly from the accompanying Solidity source can
 exceed the initcode limit; use the artifact's tested Yul creation bytecode for this
 mode. The constructor can derive the complete fixed matrix before storing it;
 no installation call is needed after deployment. In the last completed four-key
-generator validation, the rate-3 example used 168.6 million verification call gas
-and 518.1 million creation gas.
+generator validation, the rate-3 example used 162.3 million verification call gas
+and 517.1 million creation gas.
 An artifact advertising `construction.programInput` also accepts the public
 circuit bytes alongside the proof, authenticated against the constructor's
 stored digest. `withVerifierProgram(proof, deployment)` prepares this optional
-input; that validation measured 159.3 million call gas, or 135.4 million with fully checked SHA
+input; that validation measured 153.0 million call gas, or 120.2 million with fully checked SHA
 hints. Bare native proofs remain accepted. The native proof is 373,976 bytes;
 the circuit bytes are additional calldata. The 10-million-gas target remains unmet.
 See [compact deployment](docs/direct-solidity-verification.md#compact-yul-deployment).
@@ -168,14 +168,30 @@ circuit program. The deployed contract is immediately ready for `verify`;
 there is no upload function or subsequent initialization. Circuit data is generated
 from the verification key, independently of any proof or private witness.
 
-The last completed four-key public-generation validation of `write_verifier_deployment`
-measured the arithmetic rate-3 proof at **135,395,587 call gas** with authenticated public circuit data and
-checked SHA hints, or **168,627,101 call gas** for the original proof alone.
-Its constructor takes no arguments; its 49,065-byte creation code installs the
-24,492-byte runtime and all circuit data. The public generator emits exactly the
-creation/runtime bytes tested with two independently blinded zk proofs. These
-measurements include caller ABI encoding and exclude transaction intrinsic/calldata
-gas. **The 10-million-gas target remains unmet.**
+The completed four-key public-generation validation of `write_verifier_deployment`
+measured the arithmetic rate-3 proof at **120,243,678 CALL gas** with authenticated
+public circuit data and checked SHA hints, or **162,331,325** for the original proof.
+Its 48,877-byte creation code installs the 24,544-byte runtime and all circuit data,
+with no constructor arguments. All four public generations match the measured
+version-11 SHA artifacts, reusing their 40 successful CREATE/proof tests,
+including an independently blinded rate-3 proof. CALL includes caller ABI work and
+excludes transaction intrinsic/calldata gas. **The 10-million target remains unmet.**
+
+The backend also emits explicitly scheduled SHA round and message-expansion
+kernels with versioned `runtimeCompilation` bindings and independent equation
+checks. The latest message-expansion loop and shared SHA core pass **40 fresh
+deployment/proof tests** across four circuit keys and an independently blinded
+proof. With authenticated program data and fully checked hash hints, the primary
+rate-3 CALL costs **120,243,678 gas**, down **449,696** from version 10; the
+independent proof costs **120,877,348 gas** against the same runtime.
+Version 11 retains round masks and two schedule predecessors while preserving
+every word recurrence, round and hash comparison. Creation/runtime sizes are
+48,877/24,544 bytes. Sharing the packed core increases the cost without hints:
+primary native-proof CALL is **162,331,325 gas**, versus
+160,343,160 in version 5. All four public key-only generations are validated
+against the tested creation code, runtime, ABI, metadata and complete sources.
+Every native zk Binius check, the `IVerifier` view ABI and argument-free
+deployment remain in place. **The 10-million target is unmet.**
 
 The implementation uses compact FRI loops, sparse matrix contractions and shared
 multilinear interpolations. For the source-returning APIs, with cold program storage, the native equality fixture

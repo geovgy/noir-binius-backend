@@ -86,6 +86,54 @@ export type VerifierDeployment = {
   initcodeBytes: number;
   runtimeBytes: number;
   solidityInitcodeBytes: number;
+  /** When present, compile the complete Yul source for runtime identity.
+   * The Solidity body is the semantic reference, with its own runtime hash. */
+  runtimeCompilation?: {
+    runtimeSource: 'BiniusVerifier.yul';
+    solidityReferenceRuntimeSha256: `0x${string}`;
+  } & (({ scalarCore?: never } & ({ kind: 'yul-sha-rounds-v1'; wordBlockSha256?: never;
+    roundBlockSha256: '0x25aaa3f04cee1446d5901296eecd247b0dbd9d6d2fca036533802f7485d09fbd';
+  } | {
+    kind: 'yul-sha-rounds-v2';
+    roundBlockSha256: '0x25aaa3f04cee1446d5901296eecd247b0dbd9d6d2fca036533802f7485d09fbd';
+    wordBlockSha256: '0x4c6cc06c6965224f123533b5ad7b855828b107042ebde9993c31516bd1e11bda';
+  } | {
+    kind: 'yul-sha-rounds-v3';
+    roundBlockSha256: '0xfcb13ca730f9b4f8a65662a14d75ee0731a31d7251addfe3931873f2c67e3717';
+    wordBlockSha256: '0x4c6cc06c6965224f123533b5ad7b855828b107042ebde9993c31516bd1e11bda';
+  } | {
+    kind: 'yul-sha-rounds-v4';
+    roundBlockSha256: '0xb95b04dd62c7769294246ea85f6ae6e5fce78e954ec8e0c0b87b7b88d1bde25f';
+    wordBlockSha256: '0x4c6cc06c6965224f123533b5ad7b855828b107042ebde9993c31516bd1e11bda';
+  } | {
+    kind: 'yul-sha-rounds-v5';
+    roundBlockSha256: '0xb95b04dd62c7769294246ea85f6ae6e5fce78e954ec8e0c0b87b7b88d1bde25f';
+    wordBlockSha256: '0x4e56b829a8c054a5388a18673f804cfc74f71ce617feb5b788fcb78747b02776';
+  })) | {
+    kind: 'yul-sha-rounds-v6'; scalarCore: 'packed';
+    roundBlockSha256: '0x89d86e1aa7d12b47bc53ddd4391018dc61f0b5560e6a5e10aa4ebdc2869f846a';
+    wordBlockSha256: '0x4e56b829a8c054a5388a18673f804cfc74f71ce617feb5b788fcb78747b02776';
+  } | {
+    kind: 'yul-sha-rounds-v7'; scalarCore: 'packed';
+    roundBlockSha256: '0xc6b97f9bf6025e0ed5cdb7ecbf46f5b2099dba4f09d28c601edcef6a5d38e741';
+    wordBlockSha256: '0x4e56b829a8c054a5388a18673f804cfc74f71ce617feb5b788fcb78747b02776';
+  } | {
+    kind: 'yul-sha-rounds-v8'; scalarCore: 'packed';
+    roundBlockSha256: '0xc6b97f9bf6025e0ed5cdb7ecbf46f5b2099dba4f09d28c601edcef6a5d38e741';
+    wordBlockSha256: '0x6234a2eab2cd341248e9c642e3d588a1f1cfcbfefe8b4af95802a28c0db80a30';
+  } | {
+    kind: 'yul-sha-rounds-v9'; scalarCore: 'packed';
+    roundBlockSha256: '0x8747454f3932cbbc93ac3ddaa05fc4d4ffcb30142ef0f88b8d51c1e4bf1ac55b';
+    wordBlockSha256: '0x4dd2efd40dc163b484fc7b6526cdba1f1d82bece8845961aa0067939bf0930e9';
+  } | {
+    kind: 'yul-sha-rounds-v10'; scalarCore: 'packed';
+    roundBlockSha256: '0x8747454f3932cbbc93ac3ddaa05fc4d4ffcb30142ef0f88b8d51c1e4bf1ac55b';
+    wordBlockSha256: '0x12fbd5916a21d830f2707a3ab5a7849c4d1f90f1c1b3e417cf7c06dcd05cbb52';
+  } | {
+    kind: 'yul-sha-rounds-v11'; scalarCore: 'packed';
+    roundBlockSha256: '0xc42783843e8233d2402c8f174feea2ffd8ae2ade1f503a60aa888ee2bc67c4ad';
+    wordBlockSha256: '0x997d259dd8aece2235a17177f6422949b27ec974286b968ba83aa0a25ea96071';
+  });
   /** Circuit review data; deployment still takes only bytecode and no arguments. */
   construction?: {
     kind: 'affine-matrix-v1';
@@ -467,6 +515,7 @@ function parseVerifierDeployment(source: string): VerifierDeployment {
   const code = (value: unknown) => typeof value === 'string' && /^0x(?:[0-9a-f]{2})+$/.test(value);
   const solidity = artifact?.compilerSettings?.solidity;
   const yul = artifact?.compilerSettings?.yul;
+  const binding = artifact?.runtimeCompilation;
   if (
     artifact?.contractName !== 'BiniusVerifier' ||
     !code(artifact.bytecode) || !code(artifact.deployedBytecode) ||
@@ -480,6 +529,42 @@ function parseVerifierDeployment(source: string): VerifierDeployment {
     solidity?.optimizer?.enabled !== true || solidity.optimizer.runs !== 200 ||
     solidity.viaIR !== true || solidity.evmVersion !== 'osaka' || solidity.metadata?.bytecodeHash !== 'none' ||
     yul?.optimizer?.enabled !== true || yul.optimizer.runs !== 200 || yul.evmVersion !== 'osaka' ||
+    (binding !== undefined && (
+      (binding?.kind !== 'yul-sha-rounds-v1' && binding?.kind !== 'yul-sha-rounds-v2' &&
+        binding?.kind !== 'yul-sha-rounds-v3' && binding?.kind !== 'yul-sha-rounds-v4' &&
+        binding?.kind !== 'yul-sha-rounds-v5' && binding?.kind !== 'yul-sha-rounds-v6' &&
+        binding?.kind !== 'yul-sha-rounds-v7' && binding?.kind !== 'yul-sha-rounds-v8' && binding?.kind !== 'yul-sha-rounds-v9' && binding?.kind !== 'yul-sha-rounds-v10' && binding?.kind !== 'yul-sha-rounds-v11') ||
+      (binding.kind === 'yul-sha-rounds-v6' || binding.kind === 'yul-sha-rounds-v7' || binding.kind === 'yul-sha-rounds-v8' || binding.kind === 'yul-sha-rounds-v9' || binding.kind === 'yul-sha-rounds-v10' || binding.kind === 'yul-sha-rounds-v11'
+        ? binding.scalarCore !== 'packed' : binding.scalarCore !== undefined) ||
+      (binding.kind === 'yul-sha-rounds-v1' ? binding.wordBlockSha256 !== undefined :
+        binding.wordBlockSha256 !== (binding.kind === 'yul-sha-rounds-v11'
+          ? '0x997d259dd8aece2235a17177f6422949b27ec974286b968ba83aa0a25ea96071'
+          : binding.kind === 'yul-sha-rounds-v10'
+          ? '0x12fbd5916a21d830f2707a3ab5a7849c4d1f90f1c1b3e417cf7c06dcd05cbb52'
+          : binding.kind === 'yul-sha-rounds-v9'
+          ? '0x4dd2efd40dc163b484fc7b6526cdba1f1d82bece8845961aa0067939bf0930e9'
+          : binding.kind === 'yul-sha-rounds-v8'
+          ? '0x6234a2eab2cd341248e9c642e3d588a1f1cfcbfefe8b4af95802a28c0db80a30'
+          : binding.kind === 'yul-sha-rounds-v5' || binding.kind === 'yul-sha-rounds-v6' || binding.kind === 'yul-sha-rounds-v7'
+          ? '0x4e56b829a8c054a5388a18673f804cfc74f71ce617feb5b788fcb78747b02776'
+          : '0x4c6cc06c6965224f123533b5ad7b855828b107042ebde9993c31516bd1e11bda')) ||
+      binding.runtimeSource !== 'BiniusVerifier.yul' ||
+      typeof binding.solidityReferenceRuntimeSha256 !== 'string' ||
+      !/^0x[0-9a-f]{64}$/.test(binding.solidityReferenceRuntimeSha256) ||
+      binding.roundBlockSha256 !== (binding.kind === 'yul-sha-rounds-v11'
+        ? '0xc42783843e8233d2402c8f174feea2ffd8ae2ade1f503a60aa888ee2bc67c4ad'
+        : binding.kind === 'yul-sha-rounds-v9' || binding.kind === 'yul-sha-rounds-v10'
+        ? '0x8747454f3932cbbc93ac3ddaa05fc4d4ffcb30142ef0f88b8d51c1e4bf1ac55b'
+        : binding.kind === 'yul-sha-rounds-v7' || binding.kind === 'yul-sha-rounds-v8'
+        ? '0xc6b97f9bf6025e0ed5cdb7ecbf46f5b2099dba4f09d28c601edcef6a5d38e741'
+        : binding.kind === 'yul-sha-rounds-v6'
+        ? '0x89d86e1aa7d12b47bc53ddd4391018dc61f0b5560e6a5e10aa4ebdc2869f846a'
+        : binding.kind === 'yul-sha-rounds-v4' || binding.kind === 'yul-sha-rounds-v5'
+        ? '0xb95b04dd62c7769294246ea85f6ae6e5fce78e954ec8e0c0b87b7b88d1bde25f'
+        : binding.kind === 'yul-sha-rounds-v3'
+        ? '0xfcb13ca730f9b4f8a65662a14d75ee0731a31d7251addfe3931873f2c67e3717'
+        : '0x25aaa3f04cee1446d5901296eecd247b0dbd9d6d2fca036533802f7485d09fbd')
+    )) ||
     !Array.isArray(artifact.abi) || artifact.abi.length !== 2 ||
     artifact.abi[0]?.type !== 'constructor' || artifact.abi[0].stateMutability !== 'nonpayable' ||
     !Array.isArray(artifact.abi[0].inputs) || artifact.abi[0].inputs.length !== 0 ||

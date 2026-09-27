@@ -14,6 +14,7 @@ mod product_wiring;
 mod program;
 mod program_input;
 mod public_wiring;
+mod sha_stack;
 mod short_wiring;
 mod storage;
 mod yul_deployment;
@@ -21,6 +22,7 @@ mod yul_deployment;
 pub use construction::{ConstructionInfo, PrivateGroupingInfo, PublicExpansionInfo, StorageInfo};
 pub use hints::prepare_solidity_proof;
 pub use program_input::{ProgramInputInfo, with_verifier_program};
+pub use sha_stack::RuntimeCompilation;
 pub use yul_deployment::VerifierDeployment;
 
 const DIRECT_TEMPLATE: &str = include_str!("direct_solidity_verifier.template.sol");
@@ -858,7 +860,40 @@ fn finish_sha_padding_deployment(
     };
     match compiled {
         Ok(compiled) if construction::fixed_sha_entry_fits(&compiled.runtime) => {
-            Ok(compiled.artifact)
+            finish_shared_interpolation_deployment(plan, compiled.artifact, compiler)
+        }
+        Ok(_) => Ok(baseline),
+        Err(error) if error.downcast_ref::<deployment::SizeLimit>().is_some() => Ok(baseline),
+        Err(error) => Err(error),
+    }
+}
+
+/// Share only the existing packed interpolation body. Preserve the preceding
+/// artifact and its construction plan when the complete candidate does not fit.
+fn finish_shared_interpolation_deployment(
+    plan: &program::ConstructedProgram,
+    baseline: VerifierDeployment,
+    compiler: &std::path::Path,
+) -> Result<VerifierDeployment> {
+    let source = construction::share_packed_interpolation(baseline.solidity_source.clone())?;
+    let compiled = match yul_deployment::compile_with_construction(&source, compiler, Some(plan)) {
+        Err(error)
+            if error
+                .downcast_ref::<deployment::SizeLimit>()
+                .is_some_and(deployment::SizeLimit::is_initcode) =>
+        {
+            yul_deployment::compile_with_compressor(
+                &source,
+                compiler,
+                Some(plan),
+                codec::compress_size_retry,
+            )
+        }
+        result => result,
+    };
+    match compiled {
+        Ok(compiled) if construction::fixed_sha_entry_fits(&compiled.runtime) => {
+            sha_stack::finish(plan, compiled.artifact, compiler)
         }
         Ok(_) => Ok(baseline),
         Err(error) if error.downcast_ref::<deployment::SizeLimit>().is_some() => Ok(baseline),

@@ -12,8 +12,8 @@ own storage. There is no program-upload function or subsequent installation step
 The fixed data is losslessly compressed in the constructor's source; it is not
 part of the proof. Code generation receives only the verification key.
 
-The last completed four-key public-generator validation measured **135,395,587 call gas**
-for arithmetic rate 3 with checked SHA hints and authenticated circuit data, or **168,627,101 gas** for
+The completed four-key public-generator validation measured **120,243,678 CALL gas**
+for arithmetic rate 3 with checked SHA hints and authenticated circuit data, or **162,331,325 gas** for
 the original proof alone. These use the key-only deployment-artifact path
 described below. The initial tables record the ordinary Solidity-source API;
 the later constructed-deployment tables contain that complete validation.
@@ -217,9 +217,29 @@ provides `generateVerifierDeployment({ solidityCompiler, logInvRate })` and
 verification key and the pinned compiler, independently of proof bytes.
 
 Deploy the artifact's `bytecode` with its `abi` and no constructor arguments.
-It contains the complete Solidity implementation in `soliditySource`, the Yul
-creation source in `yulSource`, and the exact Solidity-compiled runtime in
-`deployedBytecode`. It also records compiler settings and both code sizes.
+It contains the complete Solidity implementation in `soliditySource`, the complete
+Yul object in `yulSource`, and the installed runtime in `deployedBytecode`.
+It also records compiler settings and both code sizes. Without `runtimeCompilation`,
+the runtime is the ordinary Solidity compiler output. An artifact advertising
+`runtimeCompilation.kind` of `yul-sha-rounds-v1` through `yul-sha-rounds-v11`
+uses `BiniusVerifier.yul` as the
+compilation unit for both creation and runtime. Its complete Solidity body is the
+semantic reference; the metadata binds its ordinary runtime by SHA-256 and pins
+the exact SHA round opcode block. Version 2 additionally pins `wordBlockSha256`
+for the exact message-expansion body. Version 3 pins the improved round stack
+placement with a different round-block hash, preserving the same equations.
+Version 4 uses an absolute cursor through the same 64 round-constant and
+schedule addresses, with its own checked block hash. Version 5 preserves that
+round block and binds a new message-expansion block with four fewer stack swaps.
+Version 6 binds a new round block and `scalarCore: "packed"`: three retained
+mask constants allow four exact round bodies per loop, with sixteen iterations.
+Both complete scalar/packed functions must match, including cached schedules,
+state copies and masked feed-forward. Solc may swap their specialization names;
+the transform checks the equations for either ordering. Scalar calls clear the
+pending padding request, receive canonical low-lane words, preserve canonical
+state lanes across feed-forward, and expose only their unchanged low-lane digest.
+`solidityInitcodeBytes` always records the actual
+ordinary Solidity creation size, including for this explicit Yul mode.
 The accompanying Solidity constructor can exceed 49,152 bytes; this mode's
 deployment artifact uses the checked Yul creation code. Existing APIs that return
 Solidity source retain their original behavior and their own size checks.
@@ -233,7 +253,7 @@ one word; malformed or oversized literals are rejected. It replaces only those s
 `datacopy` from a Yul data section. The payload, decompression, storage installation
 and returned runtime remain identical. Unknown AST layouts and compiler failures
 produce errors. The actual Yul creation code must fit 49,152 bytes; the verified
-Solidity runtime must fit 24,576 bytes. ABI and executable-bytecode checks exclude
+installed runtime must fit 24,576 bytes. ABI and executable-bytecode checks exclude
 external verifier calls, precompiles, state updates during verification and any
 entry point other than the read-only `IVerifier.verify`.
 
@@ -388,44 +408,268 @@ The following SHA stage replaces `x XOR (x AND mask)` with `x AND NOT(mask)`
 when clearing rotation source bits. The expressions agree for every 256-bit
 word; all packed lanes, guard bits and compression rounds remain identical.
 The next stage uses bounded cursors for those same SHA round addresses. The
-final stage factors common products in the fixed precommit polynomial, retaining
+following stage factors common products in the fixed precommit polynomial, retaining
 factor multiplicities and exact equality for arbitrary field coordinates.
 After an actual initcode-size failure, the stage tries one additional lossless
 compression option before retaining the complete preceding artifact. The
 measured rate-1 key now fits with that option.
 
-| Circuit and proof | Original-proof call gas | Hinted call gas | Program + original | Program + hinted |
-| --- | ---: | ---: | ---: | ---: |
-| Equality, rate 1 | 128,096,481 | 121,905,435 | 122,584,297 | 116,401,222 |
-| Arithmetic, rate 1 | 209,182,654 | 185,041,842 | 200,286,288 | 176,192,971 |
-| Arithmetic, rate 2 | 175,804,843 | 151,801,277 | 166,534,638 | 142,577,486 |
-| Arithmetic, rate 3 | 168,627,101 | 144,677,435 | 159,299,218 | 135,395,587 |
-| Independently blinded arithmetic, rate 3 | 169,537,609 | 145,587,933 | 160,209,610 | 136,305,968 |
+The fixed-arena stage reserves and clears call-local SHA scratch before allocating
+the program. Literal addresses replace loads of the same constants, schedule and
+state pointers; every SHA expression, round and comparison stays unchanged. The
+generator checks the compiler's initial allocation and the Machine field layout,
+then checks the complete constructor and runtime before selecting the artifact.
+These four-key measurements also include the padding-schedule cache. It reuses
+only the schedule of an identical final padding block, checks its length key,
+and retains the complete compression rounds and digest comparisons.
 
-The four fresh key-only public generations emit the exact tested creation/runtime
-bytes, ABI, compiler settings and construction metadata. Their binding reuses
-40 actual-CREATE tests from the matched prototypes, including two independently
-blinded rate-3 proofs; it adds no new EVM executions. The integration build passes
-51 Rust library tests and four CLI tests. Both complete source forms also match
-the tested prototypes after removing comments and whitespace. The selected
-factoring prototype also passes three kernel tests, six exact polynomial-root
-identities, and byte comparisons against the production Rust graph for all four
-keys. Earlier transpose, SHA and FRI comparisons are recorded separately from
-the 40 reused selected-artifact tests.
-Evidence, exact source transformations and artifact identities are in
-`target/solidity-reports/factored-precommit-retry-integration/`,
-`target/solidity-reports/factored-precommit-r1-compression/`, and
-`target/solidity-reports/factored-monomial-aliases/`.
+The following stage shares the existing packed interpolation body across groups.
+It preserves every operand, product and write in the original order. Groups larger
+than 256 cells are split into consecutive halves; their 16-bit lengths bound the
+additional split depth to eight. Its complete prototypes pass 40 deployment/proof
+tests, including an independently blinded proof. Arithmetic CALL gas decreases
+by 43,526, reaching **132,957,470** with program data and checked SHA hints;
+equality saves 39,996. Runtime decreases by 91 bytes. Rate 1 fits after the existing
+lossless compression retry. All four fresh public generations match those
+tested artifacts. Evidence is in
+`target/solidity-reports/group-chunk-padding-context/` and
+`target/solidity-reports/shared-interpolation-integration/`.
+
+A subsequent prototype schedules the same packed SHA rounds directly on the EVM
+stack. It executes all 64 rounds with the original schedule, constants, masks,
+rotations, choice and majority. Symbolic comparison of the actual optimized Yul
+and decoded opcodes preserves every state output; independent scalar vectors and
+EVM fuzz tests also pass. Its 40 complete deployment/proof tests across four keys
+and two blinded rate-3 proofs measure **129,796,813 CALL gas** for the primary
+program-plus-hinted path, a reduction of **3,160,657**. The second blinded proof
+uses 130,637,683. The primary creation/runtime sizes are 48,876/24,503 bytes.
+
+The backend now integrates this stage after shared interpolation, with an explicit
+artifact binding. It matches the exact optimized equations as Yul tokens, confined
+to the runtime object. An unrecognized optional layout or actual code-size failure
+retains the preceding complete artifact; compiler failures propagate. Constructor
+regeneration uses the typed circuit plan and the new compressed runtime. It checks
+every preceding payload byte against the reconstructed prefix and requires the
+final Yul compilation to preserve the candidate runtime exactly.
+
+Solc maps the entire verbatim block to one source-map entry. The runtime checker
+validates its exact opcodes, stack depth and internal loop before advancing that
+entry, then retains every existing opcode and unmapped-tail check. The independent
+EVM runner compiles both sources, checks that the complete runtime source differs
+only by the proved round substitution, and compares deployed code to the fresh
+Yul compiler output. The integrated deployments pass 40 fresh tests across all four keys and two
+independently blinded rate-3 proofs. The primary rate-3 result is
+**129,797,148 CALL gas**; its creation/runtime sizes are 48,905/24,503 bytes.
+The small CALL difference from the prototype includes caller preparation for the
+rebuilt creation artifact; the installed runtime is byte-for-byte identical.
+Prototype evidence is in `target/solidity-reports/sha-stack-schedule/`;
+generation and integration evidence is in
+`target/solidity-reports/sha-stack-integration/`.
+
+The optional version-2 stage also schedules the original SHA message-expansion
+body on the stack. Its four input addresses, word equation and single output
+store are unchanged, as are the enclosing loop and padding cache. The maintained
+checker compares the decoded opcodes with the exact original 256-bit expression,
+then independently checks 20,321 scalar steps and 896 complete lane expansions.
+Both opcode blocks consume one source-map entry each and receive separate checks;
+the remaining runtime is checked in full. An incompatible or oversized version-2
+artifact falls back to the complete version-1 artifact. The primary rate-3
+deployment measures **128,540,095 CALL gas**, saving 1,257,053 against version 1;
+the independent proof measures **129,361,093**. Both use the same actual CREATE
+artifact. All four keys and the independently blinded proof pass 40 fresh
+deployment/proof tests. Rate-3 creation/runtime sizes are 48,905/24,499 bytes;
+rate-2, rate-1 and equality program-plus-hinted CALLs are 134,926,932,
+166,320,822 and 108,905,986 gas. Generation and integration evidence is in
+`target/solidity-reports/sha-word-stack-integration/`.
+
+Version 3 improves operand placement in the same round equations. It passes
+40 fresh deployment/proof tests across four keys and an independently blinded
+rate-3 proof. The primary and independent program-plus-hinted CALLs are
+**128,251,903** and **129,068,485** gas; creation/runtime sizes are 48,905/24,498
+bytes. Rate-2, rate-1 and equality calls are 134,609,172, 165,902,262 and
+108,596,674. Generation and integration evidence is in
+`target/solidity-reports/sha-round-placement-integration/`.
+
+Version 4 advances a cursor through the constant table. Its block starts at
+`0x1000`, advances by 32 and ends at `0x1800`; the schedule address is always
+the cursor plus `0xa00`. The independent checker proves the original state
+equations and all 64 address pairs. It passes 40 fresh CREATE/proof tests.
+Program-plus-hinted CALLs measure **127,677,020** for the primary rate-3 proof
+and **128,484,793** for the independent proof, using the same 48,905-byte
+creation code and 24,496-byte runtime. Rate-2, rate-1 and equality measure
+133,975,307, 165,067,322 and 107,979,661. Generation and integration evidence is
+in `target/solidity-reports/sha-absolute-cursor-integration/`.
+
+Version 5 removes four stack swaps from the message-expansion address calculations,
+retaining the version-4 round block. The 288-byte word block has the same four
+reads, one write and unrestricted 256-bit expression as the original Yul. Its
+independent scalar check covers 20,321 steps and 896 complete lane expansions.
+All 40 fresh deployment/proof tests pass across four circuit keys and both
+blinded rate-3 proofs. Program-plus-hinted CALLs cost **126,838,940** for the
+primary proof and **127,633,465** for the independent proof. Rate-2, rate-1 and
+equality cost 133,055,435, 163,848,506 and 107,088,589 gas. Primary creation/runtime
+sizes are 48,905/24,492 bytes and CREATE costs 517,544,983 gas. Generation and
+integration evidence is in
+`target/solidity-reports/sha-word-order-integration/`.
+
+A later research prototype shares the packed core with scalar hashing, then
+retains three masks on the stack to fit four rounds per loop. It preserves
+all 64 rounds and passes independent round, continuation and digest models.
+Its two genuine zk proof profiles save 1,446,424 / 1,556,759 instruction gas
+over version 5 and fit in 24,545 runtime bytes. These are diagnostic profiles
+with initialized storage, not deployment or verification CALL measurements.
+Its research compiler object retains the preceding constructor payload and must
+not be deployed. Version-6 integration regenerates that constructor from the
+typed plan and binds both complete SHA functions before replacing them. Rust,
+TypeScript and Python guards cover function-name reversal and unrelated source
+changes. Independent opcode models check 2,254 lane compressions and 50 scalar
+messages spanning 422 compression blocks against hashlib. See
+`target/solidity-reports/sha-unified-stack-core/` for the sealed research evidence.
+
+Version 6 now passes all 40 fresh actual deployment/proof tests across the four
+circuit keys and both blinded rate-3 proofs. Program-plus-hinted CALLs cost
+**125,392,516** for the primary proof and **126,076,706** for the independent
+proof. Rate-2, rate-1 and equality cost 131,105,215, 161,350,126 and 105,256,671
+gas. Primary CREATE costs 516,616,477 gas, with 48,617/24,545-byte init/runtime
+and 56,763-byte ordinary Solidity init. Generation and integration evidence is
+in `target/solidity-reports/sha-four-round-integration/`.
+The measured optimization benefits fully checked hints; sharing the packed core
+increases primary native-proof CALL from 160,343,160 to **170,878,475 gas**.
+Raw native proofs still receive complete verification. This tradeoff does not
+meet the 10-million target.
+
+Version 7 retains intermediate stack layouts across the four
+rounds and advances the cursor once per group. All 64 original constant/schedule
+address pairs and 36 per-round output equations are checked independently.
+All 40 fresh actual deployment/proof tests pass. Program-plus-hinted CALLs cost
+**123,226,564** for the primary proof and **123,889,874** for the independent proof,
+savings of 2,165,952 / 2,186,832 relative to version 6. Rate-2, rate-1 and equality
+cost 128,766,655, 158,259,886 and 102,971,007 gas. Primary CREATE costs 517,132,896
+gas, with 48,877/24,516-byte init/runtime and 57,042-byte ordinary Solidity init.
+The native-only CALL costs 167,307,995, still above version 5's 160,343,160.
+All native proof checks remain. Generation and integration evidence is
+in `target/solidity-reports/sha-group-cursor-integration/`.
+
+Version 8 preserves the ordered SHA word
+equation and moves the complete 48-step expansion loop into a checked opcode block.
+The complete original callee binds the Boolean cache flag and all surrounding
+copies, cache updates and feed-forward. Independent models check 1,806 scalar
+expansions and both cache outcomes. All 40 fresh actual deployment/proof tests
+pass across the four keys and independently blinded proof. Program-plus-hinted
+CALLs cost **122,478,194** for the primary proof and **123,134,079** for the
+independent proof, saving 748,370 / 755,795 relative to version 7. Rate-2, rate-1
+and equality cost 127,962,605, 157,191,386 and 102,188,617 gas. Primary CREATE
+costs 517,142,024 gas, with 48,877/24,514-byte init/runtime and 57,057-byte
+ordinary Solidity init. Primary native-only CALL is 166,060,170, still above
+version 5's 160,343,160. Every native proof check is retained.
+
+Validation includes 70 Rust/CLI tests, 8 TypeScript tests with 70 assertions,
+9 source/runtime provenance tests, both word bodies, five round blocks, the
+new expansion-loop model and three scalar continuation models. Generation and
+integration evidence is in `target/solidity-reports/sha-word-loop-integration/`.
+The 10-million CALL gas target remains unmet.
+
+Version 9 shares the ROTR13/22 wrap correction under explicit stack scheduling.
+Its smaller round block makes space for two unchanged word bodies per expansion
+iteration. All 48 word steps and 64 SHA rounds still execute, including the
+original ROTR2 guard bits. The round block temporarily owns 17 stack words while
+every DUP/SWAP accesses only its own values at a depth of at most 16.
+
+All 40 fresh deployment/proof tests pass across four keys and both blinded
+rate-3 proofs. Program-plus-hinted CALLs cost **121,463,474** for the primary proof
+and **122,109,279** for the independent proof, saving 1,014,720 / 1,024,800 relative
+to version 8. Rate-2, rate-1 and equality cost 126,872,621, 155,742,554 and
+101,128,201 gas. Primary CREATE costs 517,026,385 gas, with 48,745/24,563-byte
+init/runtime and 56,904-byte ordinary Solidity init. Primary native-only CALL
+is 164,367,402, still above version 5's 160,343,160. Every native proof check
+is retained; the 10-million target remains unmet.
+
+Validation includes 71 Rust/CLI tests, 8 TypeScript tests with 77 assertions,
+10 source/runtime provenance tests, six round blocks, both word bodies and
+expansion loops, and four scalar continuation models. Generation and integration
+evidence is in `target/solidity-reports/sha-double-word-integration/`.
+
+Version 10 retains the word cursor and six masks across four specialized word
+bodies. It preserves every original word equation and ordered memory access.
+All 40 fresh deployment/proof tests pass across four circuit keys and both
+blinded rate-3 proofs. Program-plus-hinted CALLs cost **120,693,374** for the
+primary proof and **121,331,529** for the independent proof, saving 770,100 /
+777,750 relative to version 9. Rate-2, rate-1 and equality cost 126,045,401,
+154,642,994 and 100,323,421 gas. Primary CREATE costs 517,087,415 gas, with
+48,877/24,552-byte init/runtime and 57,033-byte ordinary Solidity init.
+Primary native-only CALL is 163,082,712, improving by 1,284,690 from version 9
+but still above version 5's 160,343,160. The 10-million target remains unmet.
+
+Validation includes 72 Rust/CLI tests, 8 TypeScript tests with 84 assertions,
+12 provenance tests, all six round models, the grouped-word model and five
+scalar continuation models. Generation and integration evidence is in
+`target/solidity-reports/sha-word-group-integration/`. The generated constructor
+is rebuilt from the typed circuit plan; the earlier research constructor remains obsolete.
+
+Version 11 retains all six round masks and carries W[i-2]/W[i-1] on the stack
+through expansion. The exact word recurrence, all 48 ordered stores and all
+64 rounds remain. The predecessor invariant replaces 46 repeated memory reads.
+Derived mask prefixes are evaluated with exact 256-bit arithmetic, and both
+complete SHA functions remain bound to their reference equations.
+
+All **40 fresh deployment/proof tests pass** across four keys and both blinded
+rate-3 proofs. Program-plus-hinted CALLs cost **120,243,678** for the primary
+proof and **120,877,348** for the independent proof, saving 449,696 / 454,181
+relative to version 10. Rate-2, rate-1 and equality cost 125,562,685,
+154,000,846 and 99,854,095 gas. Primary CREATE costs 517,093,227 gas, with
+48,877/24,544-byte init/runtime and 57,037-byte ordinary Solidity init.
+Primary native-only CALL is 162,331,325, improving by 751,387 from version 10
+but still above version 5's 160,343,160. The **10-million target remains unmet**.
+
+Validation passes 73 Rust/CLI tests, 8 TypeScript tests with 91 assertions,
+14 source/runtime provenance tests, seven round models, the paired-word model
+and six scalar continuation models. All four public key-only generations are
+complete and match the tested version-11 artifacts. Their bytecode, runtime,
+ABI, compiler settings, construction metadata, sizes and runtime bindings are
+identical; both complete source forms match except for comments and whitespace.
+The validated generation records are in
+`target/solidity-reports/sha-word-pair-integration/`. The prototype reports `sha-resident-round-masks`
+and `sha-word-carry-pair` contain instruction profiles, while the integration
+report contains the new actual CREATE/CALL measurements.
+
+The read-only `sha-pair-cost-profile` binds those profiles to the identical
+deployed runtime and attributes every executed instruction once. The primary
+profile charges 49,535,222 gas to the two SHA blocks and 24,564,816 to the general
+field multiplier. Its full instruction total is 117,265,507; the separate actual
+CALL is 120,243,678 including caller preparation. These are current implementation
+costs, not lower bounds on other algorithms or evidence that any proof check can
+be skipped.
+
+| Circuit and proof | Original-proof CALL gas | Hinted CALL gas | Program + original | Program + hinted |
+| --- | ---: | ---: | ---: | ---: |
+| Equality, rate 1 | 114,070,838 | 105,358,298 | 108,558,665 | 99,854,095 |
+| Arithmetic, rate 1 | 195,955,580 | 162,849,601 | 187,059,331 | 154,000,846 |
+| Arithmetic, rate 2 | 167,679,922 | 134,786,476 | 158,409,717 | 125,562,685 |
+| Arithmetic, rate 3 | 162,331,325 | 129,525,526 | 153,003,442 | 120,243,678 |
+| Independently blinded arithmetic, rate 3 | 162,964,995 | 130,159,196 | 153,637,112 | 120,877,348 |
+
+The four fresh key-only public generations of version 11
+match all ten checked artifact fields and both complete source forms of the measured
+artifacts. Their binding reuses 40 successful actual CREATE/proof tests, including
+an independently blinded rate-3 proof; it adds no duplicate EVM executions. The
+integration build passes 69 Rust Solidity tests and four CLI tests. The transforms
+match all four complete sources and reject incompatible equation/layout cases.
+Every interpolation cell, field product, child reference, SHA round and word
+recurrence remains. Generation bindings and actual tests are sealed in
+`target/solidity-reports/sha-word-pair-integration/`.
+Earlier padding, factoring, transpose, SHA and FRI comparisons remain in their
+respective reports.
 
 | Circuit | CREATE gas | Initcode bytes | Runtime bytes |
 | --- | ---: | ---: | ---: |
-| Equality, rate 1 | 345,093,118 | 32,450 | 24,407 |
-| Arithmetic, rate 1 | 518,134,767 | 49,033 | 24,492 |
-| Arithmetic, rate 2 | 517,846,746 | 49,063 | 24,492 |
-| Arithmetic, rate 3 | 518,144,657 | 49,065 | 24,492 |
+| Equality, rate 1 | 343,939,352 | 32,162 | 24,438 |
+| Arithmetic, rate 1 | 517,656,560 | 48,941 | 24,544 |
+| Arithmetic, rate 2 | 516,749,433 | 48,743 | 24,544 |
+| Arithmetic, rate 3 | 517,093,227 | 48,877 | 24,544 |
 
-Rate 2 has **89 bytes** of initcode headroom; rate 3 has **87 bytes**. The rate-3
-ordinary companion Solidity initcode is 57,309 bytes; deploy the checked
+Rate 1 has **211 bytes** of initcode headroom; rate 3 has **275 bytes**. The
+arithmetic runtime has **32 bytes** of headroom. The rate-3
+ordinary companion Solidity initcode is 57,037 bytes; deploy the checked
 artifact's creation code. CREATE costs exclude the artifact file read.
 
 These call measurements include caller ABI encoding, cold program/digest storage
@@ -491,9 +735,11 @@ verification. Evidence and exact measurements are recorded in
 
 The artifact EVM test reuses the full-proof and malformed-proof tests through an
 overridden deployment function. The script independently compiles the emitted
-Solidity as `BiniusVerifier.sol` with the recorded settings. It requires exact
-runtime-byte and ABI equality with the artifact, then the EVM compares deployed
-code against that fresh compiler output. This compilation unit matters: solc
+Solidity as `BiniusVerifier.sol` with the recorded settings. It requires ABI equality
+and, for ordinary artifacts, runtime-byte equality. For explicit Yul runtime mode,
+it checks the reference runtime hash and the exact runtime source substitution,
+then independently compiles the emitted Yul for both runtime and creation identity.
+The EVM compares deployed code against that fresh compiler output. The compilation unit matters: solc
 can emit a different optimized layout when identical source is compiled alongside
 test contracts. A negative test with an altered SHA rotation is rejected before
 deployment. The test performs a real `CREATE` from the emitted bytes and checks every stored
@@ -555,8 +801,8 @@ helper rejects unsupported artifacts. The extra public bytes are call data,
 separate from the native proof, and proof size has no optimization target.
 
 Calls with this optional input at the preceding authenticated-program checkpoint
-were as follows. The last completed four-key generator validation measured
-**135,395,587 gas** for rate 3 with checked SHA hints, as recorded in the
+were as follows. The completed version-11 four-key generator validation measured
+**120,243,678 gas** for rate 3 with checked SHA hints, as recorded in the
 compact-deployment section above.
 
 | Circuit | Program + native proof call gas | Program + hinted proof call gas | Public program bytes |
@@ -812,7 +1058,9 @@ The EVM test script explicitly checks both bytecode size limits and rejects
 external-call, creation, storage-write and self-destruct instructions in the
 executable runtime. It uses Solc's instruction source map to separate constant
 tables from code, then requires an `INVALID` separator and no possible
-`JUMPDEST` in those tables.
+`JUMPDEST` in those tables. In explicit Yul mode the exact, separately checked
+SHA opcode block consumes one source-map item; no remaining executable bytes are
+skipped or exempted from the checks.
 
 ## Arithmetic and transcript compatibility
 
@@ -930,6 +1178,15 @@ Nargo for the optional Noir example:
 
 ```sh
 cargo test --locked --workspace
+bun run --cwd packages/noir-binius-backend check
+bun test ./packages/noir-binius-backend/test/solidity.test.ts
+python3 scripts/sha_stack_check.py
+python3 scripts/sha_word_stack_check.py
+python3 scripts/sha_word_loop_check.py
+python3 scripts/sha_word_group_check.py
+python3 scripts/sha_pair_stack_check.py
+python3 scripts/test_sha_stack_check.py
+python3 scripts/test_solidity_gas_log.py
 scripts/solidity-e2e.sh
 scripts/solidity-e2e.sh arithmetic
 LOG_INV_RATE=3 scripts/solidity-e2e.sh arithmetic
